@@ -28,9 +28,12 @@ def _jobs_panel(db_path):
 def _outreach_panel(db_path):
     from database import db
     stats = db.get_outreach_stats(db_path)
+    contact_stats = db.get_contact_stats(db_path)
     t = Table(box=box.SIMPLE, show_header=False, padding=(0,1))
     t.add_column("", style="dim")
     t.add_column("", style="bold yellow")
+    t.add_row("Contacts", str(contact_stats["total"]))
+    t.add_row("High confidence", str(contact_stats["high_confidence"]))
     if stats:
         for s in stats:
             t.add_row(s["status"], str(s["n"]))
@@ -43,19 +46,64 @@ def _recent_jobs_table(db_path, limit=15):
     from database import db
     conn = db.get_connection(db_path)
     rows = conn.execute(
-        "SELECT title,company,location,source,keyword_matched,found_at "
-        "FROM jobs ORDER BY found_at DESC LIMIT ?", (limit,)
+        """
+        SELECT
+            j.title,j.company,j.location,j.source,j.keyword_matched,j.found_at,
+            c.email AS contact_email,
+            c.confidence_score AS contact_score
+        FROM jobs j
+        LEFT JOIN contacts c ON c.id = (
+            SELECT c2.id
+            FROM contacts c2
+            WHERE c2.opportunity_id = j.id
+            ORDER BY c2.confidence_score DESC, c2.last_seen_at DESC
+            LIMIT 1
+        )
+        ORDER BY j.found_at DESC
+        LIMIT ?
+        """,
+        (limit,),
     ).fetchall()
     conn.close()
     t = Table(title="[bold]Recent Leads", box=box.ROUNDED, header_style="bold magenta")
-    t.add_column("Title",   style="white",  max_width=35)
-    t.add_column("Company", style="cyan",   max_width=25)
-    t.add_column("Location",style="dim",    max_width=18)
-    t.add_column("Source",  style="green",  max_width=15)
+    t.add_column("Title",   style="white",  max_width=30)
+    t.add_column("Company", style="cyan",   max_width=22)
+    t.add_column("Location",style="dim",    max_width=14)
+    t.add_column("Source",  style="green",  max_width=13)
+    t.add_column("Contact", style="yellow", max_width=28)
+    t.add_column("Score",   style="bold",   justify="right", max_width=5)
     t.add_column("Found",   style="dim",    max_width=16)
     for r in rows:
+        score = str(r["contact_score"]) if r["contact_score"] is not None else "-"
         t.add_row(r["title"], r["company"], r["location"] or "-",
-                  r["source"], (r["found_at"] or "")[:16])
+                  r["source"], r["contact_email"] or "-", score,
+                  (r["found_at"] or "")[:16])
+    return t
+
+
+def _contacts_table(db_path, min_confidence=0, limit=15):
+    from database import db
+    rows = db.get_contacts(db_path, min_confidence=min_confidence, limit=limit)
+    t = Table(
+        title=f"[bold]Public Hiring Contacts (confidence >= {min_confidence})",
+        box=box.ROUNDED,
+        header_style="bold green",
+    )
+    t.add_column("Score", style="bold", justify="right", max_width=5)
+    t.add_column("Company", style="cyan", max_width=22)
+    t.add_column("Email", style="yellow", max_width=30)
+    t.add_column("Source", style="green", max_width=14)
+    t.add_column("Opportunity", style="white", max_width=35)
+    for r in rows:
+        t.add_row(
+            str(r["confidence_score"]),
+            r["company_name"] or "-",
+            r["email"] or "-",
+            r["source_type"] or "-",
+            (r.get("opportunity_title") or "-")[:35],
+        )
+    if not rows:
+        t.add_row("-", "No contacts yet", "-", "-", "-")
     return t
 
 
@@ -108,8 +156,10 @@ def show(db_path):
     console.print()
     console.print(_recent_jobs_table(db_path))
     console.print()
+    console.print(_contacts_table(db_path, min_confidence=0))
+    console.print()
     console.print(_hr_table(db_path))
     console.print()
     console.print(_placement_intel_table(db_path))
     console.print()
-    console.print("[dim]Commands: python main.py run | fetch-now | dashboard | add-hr | test-telegram[/dim]")
+    console.print("[dim]Commands: python main.py run | fetch-now | enrich-contacts | contacts [min_confidence] | dashboard | add-hr | test-telegram[/dim]")

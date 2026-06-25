@@ -10,6 +10,7 @@ Setup:
 """
 import logging
 from datetime import datetime
+from html import escape
 
 import requests
 
@@ -45,7 +46,38 @@ def _is_configured(config):
     return True
 
 
-def notify_new_jobs(config, jobs):
+def _contact_lines(config, job, db_path):
+    if not db_path:
+        return []
+    try:
+        from database import db
+        enrichment = config.get("enrichment", {})
+        min_score = int(enrichment.get("min_confidence_for_alert", 70))
+        max_contacts = min(int(enrichment.get("max_contacts_per_opportunity", 3)), 2)
+        contacts = db.get_contacts_for_opportunity(
+            db_path,
+            job["id"],
+            min_confidence=min_score,
+            limit=max_contacts,
+        )
+    except Exception as exc:
+        logger.info("Could not load contacts for Telegram alert: %s", exc)
+        return []
+
+    lines = []
+    for contact in contacts:
+        source_type = escape(contact.get("source_type") or "public source")
+        source_url = escape(contact.get("source_url") or "")
+        email = escape(contact.get("email") or "")
+        score = int(contact.get("confidence_score") or 0)
+        lines.append(
+            f"  Contact: {email} ({score}/100, {source_type})\n"
+            f"  Source: <a href='{source_url}'>public page</a>"
+        )
+    return lines
+
+
+def notify_new_jobs(config, jobs, db_path=None):
     if not _is_configured(config) or not jobs:
         return
     tg = config["telegram"]
@@ -55,10 +87,14 @@ def notify_new_jobs(config, jobs):
         for j in chunk:
             icon = "LinkedIn" if j["source"]=="linkedin" else j["source"].capitalize()
             lines.append(
-                f"<b>{j['title']}</b>\n"
-                f"  {j['company']} | {j.get('location','')}\n"
-                f"  [{icon}] <a href='{j['url']}'>View</a>\n"
+                f"<b>{escape(j['title'])}</b>\n"
+                f"  {escape(j['company'])} | {escape(j.get('location','') or '')}\n"
+                f"  [{escape(icon)}] <a href='{escape(j['url'])}'>View</a>"
             )
+            contact_lines = _contact_lines(config, j, db_path)
+            if contact_lines:
+                lines.extend(contact_lines)
+            lines.append("")
         _send(tg["bot_token"], tg["chat_id"], "\n".join(lines))
 
 

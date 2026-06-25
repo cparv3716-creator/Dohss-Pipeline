@@ -1,122 +1,124 @@
-# DoHSS IITM Placement Pipeline - Configuration
-
 linkedin:
   keywords:
-    - "Research Analyst Economics"
-    - "Policy Analyst"
-    - "Social Science Analyst"
-    - "Quantitative Analyst"
-    - "Data Analyst Economics"
-    - "Management Consultant"
-    - "Strategy Analyst"
-    - "Economic Consultant"
-    - "Development Sector Analyst"
-    - "Public Policy Analyst"
-    - "Behavioral Economist"
-    - "Market Research Analyst"
-  location: "India"
+  - Research Analyst Economics
+  - Policy Analyst
+  - Social Science Analyst
+  - Quantitative Analyst
+  - Data Analyst Economics
+  - Management Consultant
+  - Strategy Analyst
+  - Economic Consultant
+  - Development Sector Analyst
+  - Public Policy Analyst
+  - Behavioral Economist
+  - Market Research Analyst
+  location: India
   check_interval_hours: 6
   max_results_per_keyword: 50
-
 google_alerts:
   check_interval_hours: 4
   feeds:
-    - url: "https://news.google.com/rss/search?q=%22economics%20analyst%22%20India%20hiring&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Economics analyst hiring India"
-    - url: "https://news.google.com/rss/search?q=%22public%20policy%20associate%22%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Public policy associate India"
-    - url: "https://news.google.com/rss/search?q=%22research%20associate%22%20%22social%20science%22%20India&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Social science research associate India"
-    - url: "https://news.google.com/rss/search?q=%22development%20consulting%22%20analyst%20India&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Development consulting analyst India"
-    - url: "https://news.google.com/rss/search?q=%22impact%20evaluation%22%20analyst%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Impact evaluation analyst India"
-    - url: "https://news.google.com/rss/search?q=%22monitoring%20and%20evaluation%22%20analyst%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "Monitoring evaluation analyst India"
-    - url: "https://news.google.com/rss/search?q=%22ESG%20analyst%22%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "ESG analyst India"
-    - url: "https://news.google.com/rss/search?q=%22DSE%22%20%22placement%20report%22&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "DSE placement report"
-    - url: "https://news.google.com/rss/search?q=%22ISI%22%20%22placement%20report%22%20economics&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "ISI placement report economics"
-    - url: "https://news.google.com/rss/search?q=%22TISS%22%20%22placement%20brochure%22&hl=en-IN&gl=IN&ceid=IN:en"
-      label: "TISS placement brochure"
-
+  - url: https://news.google.com/rss/search?q=%22economics%20analyst%22%20India%20hiring&hl=en-IN&gl=IN&ceid=IN:en
+    label: Economics analyst hiring India
+  - url: https://news.google.com/rss/search?q=%22public%20policy%20associate%22%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en
+    label: Public policy associate India
+  - url: https://news.google.com/rss/search?q=%22research%20associate%22%20%22social%20science%22%20India&hl=en-IN&gl=IN&ceid=IN:en
+    label: Social science research associate India
+  - url: https://news.google.com/rss/search?q=%22development%20consulting%22%20analyst%20India&hl=en-IN&gl=IN&ceid=IN:en
+    label: Development consulting analyst India
+  - url: https://news.google.com/rss/search?q=%22impact%20evaluation%22%20analyst%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en
+    label: Impact evaluation analyst India
+  - url: https://news.google.com/rss/search?q=%22monitoring%20and%20evaluation%22%20analyst%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en
+    label: Monitoring evaluation analyst India
+  - url: https://news.google.com/rss/search?q=%22ESG%20analyst%22%20India%20jobs&hl=en-IN&gl=IN&ceid=IN:en
+    label: ESG analyst India
+  - url: https://news.google.com/rss/search?q=%22DSE%22%20%22placement%20report%22&hl=en-IN&gl=IN&ceid=IN:en
+    label: DSE placement report
+  - url: https://news.google.com/rss/search?q=%22ISI%22%20%22placement%20report%22%20economics&hl=en-IN&gl=IN&ceid=IN:en
+    label: ISI placement report economics
+  - url: https://news.google.com/rss/search?q=%22TISS%22%20%22placement%20brochure%22&hl=en-IN&gl=IN&ceid=IN:en
+    label: TISS placement brochure
 institutes:
   check_interval_hours: 24
   list:
-    - name: "DSE"
-      full_name: "Delhi School of Economics"
-      placement_page: "https://econdse.org/placement/"
-      pdf_keywords: ["placement", "report", "brochure"]
-    - name: "ISI Delhi"
-      full_name: "Indian Statistical Institute Delhi"
-      placement_page: "https://www.isid.ac.in/~pu/placement.html"
-      pdf_keywords: ["placement", "annual report"]
-    - name: "ISI Kolkata"
-      full_name: "Indian Statistical Institute Kolkata"
-      placement_page: "https://www.isical.ac.in/placements"
-      pdf_keywords: ["placement"]
-    - name: "TISS"
-      full_name: "Tata Institute of Social Sciences"
-      placement_page: "https://placements.tiss.edu/"
-      pdf_keywords: ["placement", "brochure"]
-    - name: "JNU"
-      full_name: "Jawaharlal Nehru University"
-      placement_page: "https://www.jnu.ac.in/placement-cell"
-      pdf_keywords: ["placement"]
-    - name: "XLRI"
-      full_name: "XLRI Jamshedpur"
-      placement_page: "https://www.xlri.ac.in/placement/"
-      pdf_keywords: ["placement", "report"]
-
+  - name: DSE
+    full_name: Delhi School of Economics
+    placement_page: https://econdse.org/placement/
+    pdf_keywords:
+    - placement
+    - report
+    - brochure
+  - name: ISI Delhi
+    full_name: Indian Statistical Institute Delhi
+    placement_page: https://www.isid.ac.in/~pu/placement.html
+    pdf_keywords:
+    - placement
+    - annual report
+  - name: ISI Kolkata
+    full_name: Indian Statistical Institute Kolkata
+    placement_page: https://www.isical.ac.in/placements
+    pdf_keywords:
+    - placement
+  - name: TISS
+    full_name: Tata Institute of Social Sciences
+    placement_page: https://placements.tiss.edu/
+    pdf_keywords:
+    - placement
+    - brochure
+  - name: JNU
+    full_name: Jawaharlal Nehru University
+    placement_page: https://www.jnu.ac.in/placement-cell
+    pdf_keywords:
+    - placement
+  - name: XLRI
+    full_name: XLRI Jamshedpur
+    placement_page: https://www.xlri.ac.in/placement/
+    pdf_keywords:
+    - placement
+    - report
 naukri:
   check_interval_hours: 6
-  location: "india"
+  location: india
   max_pages: 3
   keywords:
-    - "Research Analyst Economics"
-    - "Policy Analyst"
-    - "Social Science Analyst"
-    - "Quantitative Analyst"
-    - "Data Analyst"
-    - "Management Consultant"
-    - "Strategy Analyst"
-    - "Economic Consultant"
-    - "Public Policy"
-    - "Development Sector"
-
+  - Research Analyst Economics
+  - Policy Analyst
+  - Social Science Analyst
+  - Quantitative Analyst
+  - Data Analyst
+  - Management Consultant
+  - Strategy Analyst
+  - Economic Consultant
+  - Public Policy
+  - Development Sector
 internshala:
   check_interval_hours: 8
   pages_per_keyword: 2
   keywords:
-    - "research analyst"
-    - "policy analyst"
-    - "economics"
-    - "social science"
-    - "data analyst"
-    - "management consultant"
-    - "development sector"
-
-# Telegram setup:
-# 1. Talk to @BotFather on Telegram -> /newbot -> copy token below
-# 2. Add the bot to your placement team group
-# 3. Fetch: https://api.telegram.org/bot<TOKEN>/getUpdates
-#    Copy the chat id (negative number for groups)
+  - research analyst
+  - policy analyst
+  - economics
+  - social science
+  - data analyst
+  - management consultant
+  - development sector
 telegram:
-  bot_token: "8969179942:AAGOPg4E-lVO5jcxSQWkfEJkxhhSJ9GHw-0"
-  chat_id: "-5494466474"
-  enabled: true
-
+  bot_token: YOUR_BOT_TOKEN_HERE
+  chat_id: YOUR_CHAT_ID_HERE
+  enabled: false
 notifications:
   new_job_found: true
   new_institute_update: true
   pdf_downloaded: true
   daily_summary: true
-  daily_summary_time: "09:00"
-
+  daily_summary_time: 09:00
 database:
-  path: "data/pipeline.db"
-
+  path: data/pipeline.db
 pdf_storage:
-  directory: "pdfs/"
+  directory: pdfs/
+enrichment:
+  enabled: true
+  max_contacts_per_opportunity: 3
+  timeout_seconds: 15
+  min_confidence_for_alert: 70
+  hunter_enabled: false

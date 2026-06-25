@@ -33,10 +33,15 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           python -m pip install -r requirements.txt
 
+      - name: Run smoke checks
+        run: |
+          python scripts/smoke_check.py
+
       - name: Patch config from GitHub Secrets
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
         run: |
           python - <<'PY'
           import os
@@ -51,10 +56,16 @@ jobs:
           config["telegram"]["chat_id"] = os.environ["TELEGRAM_CHAT_ID"]
           config["telegram"]["enabled"] = True
 
+          if os.environ.get("HUNTER_API_KEY"):
+              config.setdefault("enrichment", {})
+              config["enrichment"]["hunter_enabled"] = True
+
           path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
           PY
 
       - name: Run fetch once
+        env:
+          HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
         run: |
           python main.py fetch-now
 

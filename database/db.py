@@ -87,6 +87,25 @@ def init_db(db_path):
             notes          TEXT,
             updated_at     TEXT DEFAULT (datetime('now'))
         );
+        CREATE TABLE IF NOT EXISTS contacts (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            opportunity_id     INTEGER REFERENCES jobs(id),
+            company_name       TEXT,
+            company_domain     TEXT,
+            contact_name       TEXT,
+            role_title         TEXT,
+            email              TEXT,
+            linkedin_url       TEXT,
+            source_url         TEXT NOT NULL,
+            source_type        TEXT,
+            confidence_score   INTEGER DEFAULT 0,
+            last_seen_at       TEXT DEFAULT (datetime('now')),
+            created_at         TEXT DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_dedupe
+            ON contacts (email, company_domain, source_url);
+        CREATE INDEX IF NOT EXISTS idx_contacts_opportunity
+            ON contacts (opportunity_id, confidence_score);
     """)
     conn.commit()
     conn.close()
@@ -108,11 +127,122 @@ def insert_job(db_path, job):
         conn.close()
 
 
+def get_job_by_url(db_path, url):
+    conn = get_connection(db_path)
+    row = conn.execute("SELECT * FROM jobs WHERE url=?", (url,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def get_recent_jobs_for_enrichment(db_path, limit=50):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT j.*
+        FROM jobs j
+        LEFT JOIN contacts c ON c.opportunity_id = j.id
+        WHERE c.id IS NULL
+        ORDER BY j.found_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def get_unnotified_jobs(db_path):
     conn = get_connection(db_path)
     rows = conn.execute("SELECT * FROM jobs WHERE is_notified=0 ORDER BY found_at DESC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_contacts_for_opportunity(db_path, opportunity_id, min_confidence=0, limit=3):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM contacts
+        WHERE opportunity_id=? AND confidence_score >= ?
+        ORDER BY confidence_score DESC, last_seen_at DESC
+        LIMIT ?
+        """,
+        (opportunity_id, min_confidence, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_contacts(db_path, min_confidence=0, limit=50):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT c.*, j.title AS opportunity_title, j.url AS opportunity_url
+        FROM contacts c
+        LEFT JOIN jobs j ON j.id = c.opportunity_id
+        WHERE c.confidence_score >= ?
+        ORDER BY c.confidence_score DESC, c.last_seen_at DESC
+        LIMIT ?
+        """,
+        (min_confidence, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def insert_contact(db_path, contact):
+    conn = get_connection(db_path)
+    now = datetime.now().isoformat()
+    payload = {
+        "opportunity_id": contact.get("opportunity_id"),
+        "company_name": contact.get("company_name", ""),
+        "company_domain": contact.get("company_domain", ""),
+        "contact_name": contact.get("contact_name", ""),
+        "role_title": contact.get("role_title", ""),
+        "email": contact.get("email", ""),
+        "linkedin_url": contact.get("linkedin_url", ""),
+        "source_url": contact.get("source_url", ""),
+        "source_type": contact.get("source_type", "public_page"),
+        "confidence_score": int(contact.get("confidence_score") or 0),
+        "last_seen_at": now,
+    }
+    try:
+        conn.execute(
+            """
+            INSERT INTO contacts
+            (opportunity_id,company_name,company_domain,contact_name,role_title,email,
+             linkedin_url,source_url,source_type,confidence_score,last_seen_at)
+            VALUES
+            (:opportunity_id,:company_name,:company_domain,:contact_name,:role_title,:email,
+             :linkedin_url,:source_url,:source_type,:confidence_score,:last_seen_at)
+            ON CONFLICT(email, company_domain, source_url) DO UPDATE SET
+                opportunity_id=excluded.opportunity_id,
+                company_name=excluded.company_name,
+                contact_name=excluded.contact_name,
+                role_title=excluded.role_title,
+                linkedin_url=excluded.linkedin_url,
+                source_type=excluded.source_type,
+                confidence_score=MAX(contacts.confidence_score, excluded.confidence_score),
+                last_seen_at=excluded.last_seen_at
+            """,
+            payload,
+        )
+        inserted = conn.total_changes > 0
+        conn.commit()
+        return inserted
+    finally:
+        conn.close()
+
+
+def get_contact_stats(db_path):
+    conn = get_connection(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+    high_confidence = conn.execute(
+        "SELECT COUNT(*) FROM contacts WHERE confidence_score >= 70"
+    ).fetchone()[0]
+    conn.close()
+    return {"total": total, "high_confidence": high_confidence}
 
 
 def mark_jobs_notified(db_path, job_ids):

@@ -11,12 +11,36 @@ logger = logging.getLogger(__name__)
 def _insert_and_notify(jobs, config, db_path):
     from database import db
     from notifier import telegram
-    new_count = sum(1 for j in jobs if db.insert_job(db_path, j))
+    new_jobs = []
+    new_count = 0
+    for job in jobs:
+        if db.insert_job(db_path, job):
+            new_count += 1
+            saved = db.get_job_by_url(db_path, job.get("url", ""))
+            if saved:
+                new_jobs.append(saved)
     if new_count:
         logger.info(f"  -> {new_count} new jobs")
+        if config.get("enrichment", {}).get("enabled", True):
+            try:
+                from enrichment.contact_finder import find_company_contacts
+                contacts_added = 0
+                for job in new_jobs:
+                    for contact in find_company_contacts(
+                        job.get("company", ""),
+                        source_url=job.get("url", ""),
+                        config=config,
+                    ):
+                        contact["opportunity_id"] = job["id"]
+                        contact["company_name"] = job.get("company", contact.get("company_name", ""))
+                        if db.insert_contact(db_path, contact):
+                            contacts_added += 1
+                logger.info("  -> %s contact record(s) enriched", contacts_added)
+            except Exception as exc:
+                logger.info("  -> Contact enrichment skipped: %s", exc)
         unnotified = db.get_unnotified_jobs(db_path)
         if unnotified and config.get("notifications",{}).get("new_job_found", True):
-            telegram.notify_new_jobs(config, unnotified)
+            telegram.notify_new_jobs(config, unnotified, db_path=db_path)
             db.mark_jobs_notified(db_path, [j["id"] for j in unnotified])
     else:
         logger.info("  -> No new jobs this run.")
