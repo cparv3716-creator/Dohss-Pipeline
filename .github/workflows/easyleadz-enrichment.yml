@@ -1,6 +1,13 @@
 name: DoHSS EasyLeadz Enrichment
 
 on:
+  pull_request:
+    paths:
+      - "enrichment/easyleadz.py"
+      - "scripts/easyleadz_*.py"
+      - "scripts/import_hr_contacts.py"
+      - ".github/workflows/easyleadz-enrichment.yml"
+      - "docs/EASYLEADZ_AUTOMATION.md"
   workflow_dispatch:
     inputs:
       limit:
@@ -19,7 +26,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: dohss-easyleadz-enrichment
+  group: dohss-easyleadz-enrichment-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -40,7 +47,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Run offline smoke checks
+        run: |
+          python scripts/smoke_check.py
+          python -m py_compile enrichment/easyleadz.py scripts/easyleadz_submit.py scripts/easyleadz_webhook.py scripts/import_hr_contacts.py
+
       - name: Restore submission state
+        if: github.event_name != 'pull_request'
         uses: actions/cache@v4
         with:
           path: data/private/easyleadz_submit_state.json
@@ -82,7 +95,7 @@ jobs:
           fi
 
       - name: Upload non-sensitive submission state
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: easyleadz-submit-state-${{ github.run_id }}
