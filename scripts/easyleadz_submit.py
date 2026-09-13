@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import sqlite3
@@ -18,6 +19,10 @@ from enrichment.easyleadz import EasyLeadzError, normalize_linkedin_url, submit_
 
 def _truthy(value: str) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fingerprint(url: str) -> str:
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
 def _load_from_db(db_path: str) -> list[dict]:
@@ -35,10 +40,17 @@ def _load_from_db(db_path: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _load_from_csv(path: str) -> list[dict]:
+def _load_from_csv(path: str, min_confidence: int) -> list[dict]:
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         rows = []
         for row in csv.DictReader(f):
+            raw = row.get("Overall Confidence %") or row.get("overall_confidence") or ""
+            try:
+                score = int(float(raw)) if str(raw).strip() else 100
+            except ValueError:
+                score = 0
+            if score < min_confidence:
+                continue
             linkedin = (
                 row.get("HR LinkedIn")
                 or row.get("linkedin_url")
@@ -53,6 +65,7 @@ def _load_from_csv(path: str) -> list[dict]:
                     "company": row.get("Company") or row.get("company") or "",
                     "designation": row.get("Likely HR Role") or row.get("designation") or row.get("role") or "",
                     "linkedin_url": linkedin,
+                    "confidence": score,
                 }
             )
         return rows
@@ -84,30 +97,7 @@ def main() -> int:
     if live and not callback_url.startswith("https://"):
         raise SystemExit("EASYLEADZ_CALLBACK_URL must be a public HTTPS URL in live mode")
 
-    contacts = _load_from_csv(args.csv) if args.csv else _load_from_db(args.db)
-
-    # Re-read CSV for confidence filtering when available.
-    if args.csv:
-        with open(args.csv, "r", encoding="utf-8-sig", newline="") as f:
-            filtered = []
-            for row in csv.DictReader(f):
-                raw = row.get("Overall Confidence %") or row.get("overall_confidence") or ""
-                try:
-                    score = int(float(raw)) if str(raw).strip() else 100
-                except ValueError:
-                    score = 0
-                if score < args.min_confidence:
-                    continue
-                linkedin = row.get("HR LinkedIn") or row.get("linkedin_url") or row.get("LinkedIn") or ""
-                filtered.append({
-                    "id": "",
-                    "name": row.get("HR Name") or row.get("name") or "",
-                    "company": row.get("Company") or row.get("company") or "",
-                    "designation": row.get("Likely HR Role") or row.get("designation") or "",
-                    "linkedin_url": linkedin,
-                    "confidence": score,
-                })
-            contacts = filtered
+    contacts = _load_from_csv(args.csv, args.min_confidence) if args.csv else _load_from_db(args.db)
 
     state_path = Path(args.state)
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,10 +110,12 @@ def main() -> int:
             url = normalize_linkedin_url(c.get("linkedin_url", ""))
         except EasyLeadzError:
             continue
-        if url in submitted:
+        fp = _fingerprint(url)
+        if fp in submitted:
             continue
         c = dict(c)
         c["linkedin_url"] = url
+        c["fingerprint"] = fp
         queue.append(c)
         if len(queue) >= max(0, args.limit):
             break
@@ -141,13 +133,8 @@ def main() -> int:
             response = submit_contact(c["linkedin_url"], callback_url)
             data = response.get("data") or {}
             request_id = data.get("request_id") or ""
-            submitted[c["linkedin_url"]] = {
-                "request_id": request_id,
-                "name": c.get("name", ""),
-                "company": c.get("company", ""),
-                "designation": c.get("designation", ""),
-            }
-            state_path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
+            submitted[c["fingerprint"]] = {"request_id": request_id}
+            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
             print(f"submitted {c.get('company','')} | {c.get('name','')} | request_id={request_id}")
         except Exception as exc:
             failures += 1
