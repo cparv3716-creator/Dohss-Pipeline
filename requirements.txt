@@ -7,3 +7,4 @@ rich==13.7.1
 python-telegram-bot==20.8
 pyyaml==6.0.1
 lxml==5.1.0
+xlsxwriter==3.2.5

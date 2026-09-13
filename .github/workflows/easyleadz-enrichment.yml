@@ -1,4 +1,4 @@
-name: DoHSS EasyLeadz Enrichment
+name: DoHSS EasyLeadz Integration
 
 on:
   pull_request:
@@ -8,18 +8,17 @@ on:
       - "scripts/import_hr_contacts.py"
       - ".github/workflows/easyleadz-enrichment.yml"
       - "docs/EASYLEADZ_AUTOMATION.md"
+      - "requirements.txt"
   workflow_dispatch:
     inputs:
       limit:
-        description: "Maximum new HR profiles to submit"
+        description: "Maximum new HR profiles to submit via API (optional API mode only)"
         required: false
         default: "25"
       csv_path:
-        description: "Optional CSV path in repo/workspace; blank uses hr_contacts table"
+        description: "Optional CSV path for API mode; blank uses hr_contacts table"
         required: false
         default: ""
-  schedule:
-    - cron: "30 2 * * *"
 
 permissions:
   contents: read
@@ -30,7 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  submit:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -50,10 +49,32 @@ jobs:
       - name: Run offline smoke checks
         run: |
           python scripts/smoke_check.py
-          python -m py_compile enrichment/easyleadz.py scripts/easyleadz_submit.py scripts/easyleadz_webhook.py scripts/import_hr_contacts.py
+          python -m py_compile enrichment/easyleadz.py scripts/easyleadz_submit.py scripts/easyleadz_webhook.py scripts/import_hr_contacts.py scripts/easyleadz_prepare_csv.py scripts/easyleadz_import_results.py
+
+      - name: Explain default no-API workflow
+        run: |
+          echo "Default subscription workflow: prepare CSV -> enrich in EasyLeadz dashboard -> import result CSV -> private Excel."
+          echo "No EasyLeadz API key is required for that workflow."
+
+  optional-api-submit:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
 
       - name: Restore submission state
-        if: github.event_name != 'pull_request'
         uses: actions/cache@v4
         with:
           path: data/private/easyleadz_submit_state.json
@@ -61,7 +82,7 @@ jobs:
           restore-keys: |
             easyleadz-state-
 
-      - name: Validate EasyLeadz configuration
+      - name: Validate optional API configuration
         env:
           EASYLEADZ_LIVE_MODE: ${{ secrets.EASYLEADZ_LIVE_MODE }}
           EASYLEADZ_API_KEY: ${{ secrets.EASYLEADZ_API_KEY }}
@@ -70,7 +91,7 @@ jobs:
           python - <<'PY'
           import os
           live = os.getenv("EASYLEADZ_LIVE_MODE", "").lower() == "true"
-          print("Live mode:", live)
+          print("Optional API live mode:", live)
           if live:
               if not os.getenv("EASYLEADZ_API_KEY"):
                   raise SystemExit("Missing EASYLEADZ_API_KEY")
@@ -79,7 +100,7 @@ jobs:
                   raise SystemExit("EASYLEADZ_CALLBACK_URL must be HTTPS")
           PY
 
-      - name: Submit eligible HR profiles
+      - name: Submit via API only when explicitly enabled
         env:
           EASYLEADZ_LIVE_MODE: ${{ secrets.EASYLEADZ_LIVE_MODE }}
           EASYLEADZ_API_KEY: ${{ secrets.EASYLEADZ_API_KEY }}
@@ -95,7 +116,7 @@ jobs:
           fi
 
       - name: Upload non-sensitive submission state
-        if: always() && github.event_name != 'pull_request'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: easyleadz-submit-state-${{ github.run_id }}
