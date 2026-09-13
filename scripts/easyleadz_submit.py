@@ -12,7 +12,12 @@ import hashlib
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from enrichment.easyleadz import EasyLeadzError, normalize_linkedin_url, submit_contact
 
