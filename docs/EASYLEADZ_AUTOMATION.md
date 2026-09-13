@@ -1,93 +1,113 @@
 # EasyLeadz HR enrichment automation
 
-This integration enriches **known/vetted HR LinkedIn profile URLs** through the EasyLeadz API. It does not scrape LinkedIn.
+The default DoHSS workflow now supports a normal **EasyLeadz subscription without API access**.
 
-## Safety model
+DoHSS does **not** automate LinkedIn browsing or scrape LinkedIn. It works from HR LinkedIn URLs that are already known/vetted.
 
-- The public DoHSS SQLite database may contain HR names/roles/LinkedIn URLs, but EasyLeadz callback payloads can contain phone numbers and personal email addresses.
-- Callback payloads are therefore stored under `data/private/`, which is git-ignored.
-- API submission is **dry-run by default**. Live calls only happen when `EASYLEADZ_LIVE_MODE=true`.
-- Previously submitted LinkedIn URLs are tracked so scheduled runs do not repeatedly spend credits on the same profiles.
+## Default workflow: no API required
+
+1. Import vetted HR profiles into `hr_contacts`.
+2. Generate a private upload file for EasyLeadz.
+3. Upload/enrich that file in the EasyLeadz dashboard / EasySearch / Bulk Upload available on your subscription.
+4. Download the EasyLeadz result CSV.
+5. Import that CSV back into DoHSS.
+6. DoHSS matches results by LinkedIn URL and creates a private Excel workbook with phone/email data.
+
+Phone numbers and personal emails are stored under `data/private/`, which is git-ignored. Do not commit those files to this public repository.
 
 ## 1. Import vetted HR profiles
 
-Export the `Best HR Contacts` sheet as CSV, then run locally:
+Export the cleaned `Best HR Contacts` sheet as CSV and run:
 
 ```bash
 python scripts/import_hr_contacts.py /path/to/hr_contacts.csv --min-confidence 80
 ```
 
-This loads the profile name, company, role and LinkedIn URL into the existing `hr_contacts` table.
+This loads name, company, role, LinkedIn URL and confidence into the existing `hr_contacts` table.
 
-## 2. Host the callback receiver
-
-EasyLeadz posts enrichment results asynchronously to a public callback URL. Deploy this command on any HTTPS-capable service with persistent/private disk:
+## 2. Prepare the EasyLeadz upload file
 
 ```bash
-export EASYLEADZ_WEBHOOK_TOKEN='generate-a-long-random-secret'
-export EASYLEADZ_PRIVATE_STORE='/private/path/easyleadz_results.jsonl'
-python scripts/easyleadz_webhook.py
+python scripts/easyleadz_prepare_csv.py \
+  --db data/pipeline.db \
+  --min-confidence 80 \
+  --out data/private/easyleadz_upload.csv
 ```
 
-Health check:
+Output columns:
+
+- `LinkedIn URL`
+- `Name`
+- `Company`
+- `Designation`
+- `Confidence`
+
+Use the file (or its LinkedIn URL column) with the EasyLeadz dashboard feature available on your subscription.
+
+## 3. Enrich inside EasyLeadz
+
+Upload/search the generated LinkedIn URLs in EasyLeadz, then download/export the result as CSV.
+
+The exact EasyLeadz column names may vary. The DoHSS importer accepts common variants such as:
+
+- LinkedIn: `LinkedIn URL`, `LinkedIn`, `profile_url`, `linkedin_profile_url`
+- Phone: `Phone`, `phone1`, `Mobile`, `Phone Number`, `Direct Dial`
+- Secondary phone: `phone2`, `Alternate Phone`
+- Work email: `Work Email`, `Business Email`, `Official Email`, `Email`, `email1`
+- Personal email: `Personal Email`, `email2`, `Secondary Email`
+
+## 4. Import EasyLeadz results and create Excel
+
+```bash
+python scripts/easyleadz_import_results.py /path/to/easyleadz_results.csv
+```
+
+Defaults:
+
+- private SQLite: `data/private/easyleadz_contacts.db`
+- final Excel: `data/private/hr_contacts_enriched.xlsx`
+
+The Excel contains:
+
+- Company
+- HR Name
+- HR Role
+- LinkedIn
+- Phone 1
+- Phone 2
+- Work Email
+- Personal Email
+- HR Confidence %
+- Enrichment Status
+- Source File
+- Imported At
+
+The importer is idempotent: importing a later EasyLeadz export updates existing LinkedIn records rather than creating duplicates.
+
+## Privacy model
+
+The main DoHSS repository is public and currently persists `data/pipeline.db`, so enriched phone/email fields are intentionally **not** written into that public database.
+
+Sensitive data is kept in:
 
 ```text
-GET /health
+data/private/
 ```
 
-Configure the callback URL as:
+That directory is excluded by `.gitignore`.
 
-```text
-https://YOUR_HOST/easyleadz/YOUR_LONG_RANDOM_TOKEN
-```
+## Optional API mode
 
-Do **not** place the callback results file in the public repository.
+API support remains in the repository only for accounts that separately receive EasyLeadz API access.
 
-## 3. GitHub repository secrets
+Without API access, ignore:
 
-Set these repository secrets:
+- `EASYLEADZ_API_KEY`
+- `EASYLEADZ_CALLBACK_URL`
+- `EASYLEADZ_LIVE_MODE`
+- `scripts/easyleadz_submit.py`
+- `scripts/easyleadz_webhook.py`
 
-- `EASYLEADZ_API_KEY` — API key issued by EasyLeadz.
-- `EASYLEADZ_CALLBACK_URL` — public HTTPS callback URL above.
-- `EASYLEADZ_LIVE_MODE` — keep `false` until dry-run output is verified; set to `true` to allow paid/live enrichment.
+The normal subscription workflow above does not require any of them.
 
-EasyLeadz API access is plan/use-case dependent. Confirm your account has API access before switching live mode on.
-
-## 4. Manual dry run
-
-Without live mode, this cannot consume EasyLeadz credits:
-
-```bash
-python scripts/easyleadz_submit.py --db data/pipeline.db --limit 25
-```
-
-You can also test directly against a CSV:
-
-```bash
-python scripts/easyleadz_submit.py --csv /path/to/hr_contacts.csv --limit 25 --min-confidence 90
-```
-
-## 5. Live run
-
-```bash
-export EASYLEADZ_API_KEY='...'
-export EASYLEADZ_CALLBACK_URL='https://YOUR_HOST/easyleadz/YOUR_TOKEN'
-export EASYLEADZ_LIVE_MODE=true
-python scripts/easyleadz_submit.py --db data/pipeline.db --limit 25
-```
-
-## 6. GitHub Actions
-
-The workflow `.github/workflows/easyleadz-enrichment.yml` runs daily at 02:30 UTC and can also be started manually. It remains a dry run unless `EASYLEADZ_LIVE_MODE` is explicitly set to `true` in repository secrets.
-
-The workflow restores prior submission state using GitHub Actions cache, preventing duplicate submissions of the same LinkedIn URL under normal operation.
-
-## Vendor API behavior
-
-The client follows EasyLeadz's documented API flow:
-
-1. Send a GET request to `https://app.easyleadz.com/api/prod/` with JSON body containing a LinkedIn URL and `callbackUrl`.
-2. Pass the API key in the `Enapi-Key` header.
-3. Store the returned `request_id`.
-4. EasyLeadz later POSTs phone/email results to the callback URL.
-5. The documented API rate limit is 10 calls/second; DoHSS deliberately stays below that ceiling.
+If API access is later enabled, the existing manual GitHub Actions API job can be used. There is no scheduled live API run by default.
