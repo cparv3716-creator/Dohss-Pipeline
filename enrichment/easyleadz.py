@@ -7,6 +7,7 @@ kept outside the public pipeline database.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -43,14 +44,15 @@ def submit_contact(linkedin_url: str, callback_url: str, timeout: int = 30) -> d
     if not callback_url.startswith("https://"):
         raise EasyLeadzError("callback_url must be a public HTTPS URL")
 
-    response = requests.post(
+    body = {"data": {"url": url, "callbackUrl": callback_url}}
+    response = requests.get(
         API_URL,
         headers={
             "Enapi-Key": _api_key(),
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
-        json={"data": {"url": url, "callbackUrl": callback_url}},
+        data=json.dumps(body),
         timeout=timeout,
     )
     try:
