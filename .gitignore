@@ -7,3 +7,9 @@ pdfs/
 .env
 .vscode/
 config.local.yaml
+
+# EasyLeadz callback payloads may contain phone numbers/personal emails.
+data/private/
+data/hr_contacts_to_enrich.csv
+data/easyleadz_*.json
+data/easyleadz_*.jsonl
