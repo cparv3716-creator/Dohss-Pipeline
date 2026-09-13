@@ -11,15 +11,13 @@ on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "Maximum new HR profiles to submit"
+        description: "Maximum new HR profiles to submit via API"
         required: false
         default: "25"
       csv_path:
         description: "Optional CSV path in repo/workspace; blank uses hr_contacts table"
         required: false
         default: ""
-  schedule:
-    - cron: "30 2 * * *"
 
 permissions:
   contents: read
@@ -50,10 +48,10 @@ jobs:
       - name: Run offline smoke checks
         run: |
           python scripts/smoke_check.py
-          python -m py_compile enrichment/easyleadz.py scripts/easyleadz_submit.py scripts/easyleadz_webhook.py scripts/import_hr_contacts.py
+          python -m py_compile enrichment/easyleadz.py scripts/easyleadz_submit.py scripts/easyleadz_webhook.py scripts/import_hr_contacts.py scripts/easyleadz_prepare_csv.py
 
       - name: Restore submission state
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
         with:
           path: data/private/easyleadz_submit_state.json
@@ -61,7 +59,7 @@ jobs:
           restore-keys: |
             easyleadz-state-
 
-      - name: Validate EasyLeadz configuration
+      - name: Validate EasyLeadz API configuration
         env:
           EASYLEADZ_LIVE_MODE: ${{ secrets.EASYLEADZ_LIVE_MODE }}
           EASYLEADZ_API_KEY: ${{ secrets.EASYLEADZ_API_KEY }}
@@ -70,7 +68,7 @@ jobs:
           python - <<'PY'
           import os
           live = os.getenv("EASYLEADZ_LIVE_MODE", "").lower() == "true"
-          print("Live mode:", live)
+          print("API live mode:", live)
           if live:
               if not os.getenv("EASYLEADZ_API_KEY"):
                   raise SystemExit("Missing EASYLEADZ_API_KEY")
@@ -79,7 +77,8 @@ jobs:
                   raise SystemExit("EASYLEADZ_CALLBACK_URL must be HTTPS")
           PY
 
-      - name: Submit eligible HR profiles
+      - name: Submit eligible HR profiles via API
+        if: github.event_name == 'workflow_dispatch'
         env:
           EASYLEADZ_LIVE_MODE: ${{ secrets.EASYLEADZ_LIVE_MODE }}
           EASYLEADZ_API_KEY: ${{ secrets.EASYLEADZ_API_KEY }}
@@ -95,7 +94,7 @@ jobs:
           fi
 
       - name: Upload non-sensitive submission state
-        if: always() && github.event_name != 'pull_request'
+        if: always() && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: easyleadz-submit-state-${{ github.run_id }}
