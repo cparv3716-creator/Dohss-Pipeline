@@ -16,6 +16,10 @@ profile:
   internships: {value: null, verified: false, unknown: true, source: ""}
   projects: {value: null, verified: false, unknown: true, source: ""}
   research: {value: null, verified: false, unknown: true, source: ""}
+  achievements: {value: null, verified: false, unknown: true, source: ""}
+  competitions: {value: null, verified: false, unknown: true, source: ""}
+  positions_of_responsibility: {value: null, verified: false, unknown: true, source: ""}
+  coursework: {value: null, verified: false, unknown: true, source: ""}
   skills: {value: null, verified: false, unknown: true, source: ""}
   programming_languages: {value: null, verified: false, unknown: true, source: ""}
   software_tools: {value: null, verified: false, unknown: true, source: ""}

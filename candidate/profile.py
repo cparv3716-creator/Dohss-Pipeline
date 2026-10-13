@@ -48,6 +48,7 @@ PROFILE_FIELDS = (
     "full_name", "email", "phone", "city", "linkedin", "github", "portfolio",
     "education", "degrees", "institutions", "graduation_dates", "cgpa",
     "work_experience", "internships", "projects", "research", "skills",
+    "achievements", "competitions", "positions_of_responsibility", "coursework",
     "programming_languages", "software_tools", "experience_levels",
     "years_of_experience", "target_roles", "preferred_locations",
     "remote_preference", "relocation_preferences", "employment_type",

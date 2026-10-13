@@ -9,6 +9,11 @@ from tests.helpers import answer, unknown, verified, write_answers, write_profil
 
 
 class CandidateProfileTests(unittest.TestCase):
+    def test_example_profile_supports_resume_sections(self):
+        profile = CandidateProfile.load(Path("candidate/profile.example.yaml"))
+        for name in ("achievements", "competitions", "positions_of_responsibility", "coursework"):
+            self.assertTrue(profile.fact(name).unknown)
+
     def test_unknown_personal_fact_stays_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = write_profile(Path(tmp) / "profile.yaml")

@@ -17,6 +17,7 @@ answers:
   UNIVERSITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   GRADUATION_YEAR: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   CGPA: {value: null, verified: false, auto_answer_allowed: false, sensitivity: sensitive, source: "", confidence: 0}
+  VERIFIED_SKILLS: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   NOTICE_PERIOD: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   CURRENT_CTC: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}
   EXPECTED_CTC: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}

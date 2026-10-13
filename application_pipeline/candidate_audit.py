@@ -21,14 +21,20 @@ def _has(profile: CandidateProfile, *names: str) -> bool:
     return all(profile.verified_value(name) not in (None, "", [], {}) for name in names)
 
 
-def _count_values(value: Any) -> int:
+def _flatten_values(value: Any) -> set[str]:
     if value in (None, "", [], {}):
-        return 0
+        return set()
     if isinstance(value, dict):
-        return len([item for item in value.values() if item not in (None, "", [], {})])
+        flattened: set[str] = set()
+        for item in value.values():
+            flattened.update(_flatten_values(item))
+        return flattened
     if isinstance(value, (list, tuple, set)):
-        return len([item for item in value if item not in (None, "", [], {})])
-    return 1
+        flattened = set()
+        for item in value:
+            flattened.update(_flatten_values(item))
+        return flattened
+    return {str(value).strip().casefold()}
 
 
 def audit_candidate(
@@ -37,19 +43,28 @@ def audit_candidate(
     resume_policy: ResumePolicy,
     enabled_sensitive_types: set[str] | None = None,
 ) -> CandidateAudit:
-    skills = sum(
-        _count_values(profile.verified_value(name))
-        for name in ("skills", "programming_languages", "software_tools")
-    )
+    verified_skills: set[str] = set()
+    for name in ("skills", "programming_languages", "software_tools"):
+        verified_skills.update(
+            _flatten_values(profile.verified_value(name))
+        )
+    skills = len(verified_skills)
     sections = {
         "identity": "complete" if _has(profile, "full_name", "email", "phone") else "incomplete",
         "education": "complete" if _has(profile, "degrees", "institutions") else "incomplete",
+        "projects": "complete" if _has(profile, "projects") else "incomplete",
+        "research": "complete" if _has(profile, "research") else "incomplete",
+        "competitions": "complete" if _has(profile, "competitions") else "incomplete",
+        "positions of responsibility": "complete" if _has(profile, "positions_of_responsibility") else "incomplete",
+        "coursework": "complete" if _has(profile, "coursework") else "incomplete",
         "skills": f"{skills} verified",
+        "GitHub": "configured" if _has(profile, "github") else "unknown",
         "employment history": "complete" if any(
             profile.verified_value(name) not in (None, "", [], {})
             for name in ("work_experience", "internships")
         ) else "incomplete",
-        "work authorization": "configured" if _has(profile, "work_authorization") else "incomplete",
+        "work authorization": "configured" if _has(profile, "work_authorization") else "unknown",
+        "visa sponsorship": "configured" if _has(profile, "visa_sponsorship_requirements") else "unknown",
         "salary preferences": "configured" if _has(profile, "salary_preferences") else "unknown",
         "relocation": "configured" if _has(profile, "relocation_preferences") else "unknown",
         "notice period": "configured" if _has(profile, "notice_period") else "unknown",

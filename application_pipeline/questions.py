@@ -32,6 +32,7 @@ PATTERNS = (
     ("LINKEDIN", r"\blinked\s*in\b"),
     ("GITHUB", r"\bgithub\b"),
     ("PORTFOLIO", r"\b(portfolio|personal website)\b"),
+    ("VERIFIED_SKILLS", r"\b(skills|technologies|tools)\b.*\b(proficient|experience|worked|used)\b|\btechnical skills\b"),
     ("CGPA", r"\b(cgpa|gpa|grade point)\b"),
     ("GRADUATION_YEAR", r"\b(graduat(e|ion) (year|date)|year of passing)\b"),
     ("UNIVERSITY", r"\b(university|college|institution)\b"),

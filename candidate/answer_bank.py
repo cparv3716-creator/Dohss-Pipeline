@@ -19,6 +19,7 @@ CANONICAL_QUESTION_TYPES = (
     "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE", "OTHER",
     "COUNTRY", "STATE_PROVINCE", "POSTAL_CODE", "CURRENT_COMPANY",
     "CURRENT_TITLE", "PREFERRED_NAME", "PRONOUNS", "DEMOGRAPHIC_SELF_ID", "CONSENT",
+    "VERIFIED_SKILLS",
 )
 
 PROFILE_FALLBACKS = {
@@ -30,6 +31,7 @@ PROFILE_FALLBACKS = {
     "NOTICE_PERIOD": "notice_period", "WORK_AUTHORIZATION": "work_authorization",
     "VISA_SPONSORSHIP": "visa_sponsorship_requirements",
     "RELOCATION": "relocation_preferences", "YEARS_OF_EXPERIENCE": "years_of_experience",
+    "VERIFIED_SKILLS": "skills",
 }
 
 

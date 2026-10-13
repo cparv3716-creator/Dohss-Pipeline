@@ -52,6 +52,7 @@ class AtsEnrichmentQuestionTests(unittest.TestCase):
         joining = classify_question("When can you join?")
         self.assertIn(joining.question_type, ("NOTICE_PERIOD", "AVAILABILITY"))
         self.assertEqual(classify_question("What is your expected salary?").question_type, "EXPECTED_CTC")
+        self.assertEqual(classify_question("What technical skills have you used?").question_type, "VERIFIED_SKILLS")
 
 
 if __name__ == "__main__":
