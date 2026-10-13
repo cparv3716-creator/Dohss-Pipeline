@@ -24,17 +24,39 @@ def _insert_and_notify(jobs, config, db_path):
         if config.get("enrichment", {}).get("enabled", True):
             try:
                 from enrichment.contact_finder import find_company_contacts
+                from enrichment.search_contact_discovery import discover_contacts
                 contacts_added = 0
-                for job in new_jobs:
-                    for contact in find_company_contacts(
+                for idx, job in enumerate(new_jobs, start=1):
+                    found = []
+                    found.extend(find_company_contacts(
                         job.get("company", ""),
                         source_url=job.get("url", ""),
                         config=config,
+                    ))
+                    found.extend(discover_contacts(
+                        job.get("company", ""),
+                        source_url=job.get("url", ""),
+                        config=config,
+                    ))
+                    seen = set()
+                    for contact in sorted(
+                        found,
+                        key=lambda c: int(c.get("confidence_score") or 0),
+                        reverse=True,
                     ):
+                        key = (
+                            (contact.get("email") or contact.get("linkedin_url") or "").lower(),
+                            contact.get("company_domain") or "",
+                            contact.get("source_url") or "",
+                        )
+                        if not key[0] or key in seen:
+                            continue
+                        seen.add(key)
                         contact["opportunity_id"] = job["id"]
                         contact["company_name"] = job.get("company", contact.get("company_name", ""))
                         if db.insert_contact(db_path, contact):
                             contacts_added += 1
+                    logger.info("[%s/%s] %s -> %s contact(s) found", idx, len(new_jobs), job.get("company", "Unknown"), len(seen))
                 logger.info("  -> %s contact record(s) enriched", contacts_added)
             except Exception as exc:
                 logger.info("  -> Contact enrichment skipped: %s", exc)
@@ -44,6 +66,10 @@ def _insert_and_notify(jobs, config, db_path):
             db.mark_jobs_notified(db_path, [j["id"] for j in unnotified])
     else:
         logger.info("  -> No new jobs this run.")
+    try:
+        telegram.maybe_send_dohss_update(config, db_path, reason="scheduled job fetch")
+    except Exception as exc:
+        logger.info("  -> DoHSS Telegram update skipped: %s", exc)
 
 
 def _run_linkedin(config, db_path):
@@ -79,6 +105,10 @@ def _run_institute_monitor(config, db_path):
     if config.get("notifications",{}).get("new_institute_update", True):
         telegram.notify_institute_changes(config, results)
     process_new_pdfs(config, db_path)
+    try:
+        telegram.maybe_send_dohss_update(config, db_path, reason="scheduled institute monitor")
+    except Exception as exc:
+        logger.info("  -> DoHSS Telegram update skipped: %s", exc)
 
 
 def _run_daily_summary(config, db_path):

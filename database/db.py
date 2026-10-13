@@ -2,8 +2,42 @@
 database/db.py - SQLite layer for the DoHSS placement pipeline.
 """
 import sqlite3
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+# These columns are added idempotently so historical and CI-committed discovery
+# databases remain usable. Candidate-derived columns exist for model/API
+# compatibility but are deliberately left NULL in the public database; private
+# values belong in data/private/applications.db.
+JOB_MIGRATIONS = (
+    ("full_description", "TEXT"),
+    ("responsibilities", "TEXT"),
+    ("requirements", "TEXT"),
+    ("required_skills", "TEXT"),
+    ("preferred_skills", "TEXT"),
+    ("required_experience_min", "REAL"),
+    ("required_experience_max", "REAL"),
+    ("education_requirement", "TEXT"),
+    ("employment_type", "TEXT"),
+    ("remote_type", "TEXT"),
+    ("application_url", "TEXT"),
+    ("ats_provider", "TEXT"),
+    ("company_career_url", "TEXT"),
+    ("eligibility_status", "TEXT"),
+    ("eligibility_reasons", "TEXT"),
+    ("match_score", "INTEGER"),
+    ("match_confidence", "INTEGER"),
+    ("match_strengths", "TEXT"),
+    ("match_gaps", "TEXT"),
+    ("application_recommendation", "TEXT"),
+    ("application_status", "TEXT"),
+    ("needs_review", "INTEGER"),
+    ("last_enriched_at", "TEXT"),
+    ("enrichment_status", "TEXT DEFAULT 'PENDING'"),
+    ("enrichment_error", "TEXT"),
+)
 
 
 def get_connection(db_path):
@@ -98,6 +132,9 @@ def init_db(db_path):
             linkedin_url       TEXT,
             source_url         TEXT NOT NULL,
             source_type        TEXT,
+            evidence_text      TEXT,
+            email_category     TEXT,
+            allowed_for_auto_outreach INTEGER DEFAULT 0,
             confidence_score   INTEGER DEFAULT 0,
             last_seen_at       TEXT DEFAULT (datetime('now')),
             created_at         TEXT DEFAULT (datetime('now'))
@@ -106,9 +143,117 @@ def init_db(db_path):
             ON contacts (email, company_domain, source_url);
         CREATE INDEX IF NOT EXISTS idx_contacts_opportunity
             ON contacts (opportunity_id, confidence_score);
+        CREATE TABLE IF NOT EXISTS companies (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            name              TEXT NOT NULL,
+            normalized_name   TEXT UNIQUE NOT NULL,
+            official_domain   TEXT,
+            domain_confidence INTEGER DEFAULT 0,
+            careers_url       TEXT,
+            contact_url       TEXT,
+            ats_platform      TEXT,
+            source_url        TEXT,
+            source_type       TEXT,
+            evidence_text     TEXT,
+            created_at        TEXT DEFAULT (datetime('now')),
+            updated_at        TEXT DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS target_companies (
+            id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+            company                TEXT NOT NULL,
+            normalized_company     TEXT UNIQUE NOT NULL,
+            domain                 TEXT,
+            company_category       TEXT,
+            size_tier              TEXT,
+            source_institutes      TEXT,
+            likely_role_families   TEXT,
+            specific_roles_offered TEXT,
+            evidence_url           TEXT,
+            evidence_text          TEXT,
+            priority_score         INTEGER DEFAULT 70,
+            confidence_score       INTEGER DEFAULT 70,
+            notes                  TEXT,
+            created_at             TEXT DEFAULT (datetime('now')),
+            updated_at             TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_target_companies_priority
+            ON target_companies (priority_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_target_companies_category
+            ON target_companies (company_category);
+        CREATE TABLE IF NOT EXISTS company_roles (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id       INTEGER REFERENCES target_companies(id),
+            company          TEXT NOT NULL,
+            role_title       TEXT NOT NULL,
+            role_family      TEXT,
+            source_institute TEXT,
+            evidence_url     TEXT,
+            confidence_score INTEGER DEFAULT 70,
+            notes            TEXT,
+            created_at       TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_company_roles_company
+            ON company_roles (company);
     """)
+    existing_cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(contacts)").fetchall()
+    }
+    if "evidence_text" not in existing_cols:
+        conn.execute("ALTER TABLE contacts ADD COLUMN evidence_text TEXT")
+    if "allowed_for_auto_outreach" not in existing_cols:
+        conn.execute("ALTER TABLE contacts ADD COLUMN allowed_for_auto_outreach INTEGER DEFAULT 0")
+    if "email_category" not in existing_cols:
+        conn.execute("ALTER TABLE contacts ADD COLUMN email_category TEXT")
+
+    job_cols = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    for col, definition in JOB_MIGRATIONS:
+        if col not in job_cols:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {definition}")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_enrichment_status ON jobs(enrichment_status, found_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_ats_provider ON jobs(ats_provider)")
+
+    # Migrate hr_contacts with DoHSS-specific columns
+    hr_cols = {row["name"] for row in conn.execute("PRAGMA table_info(hr_contacts)").fetchall()}
+    _hr_migrations = [
+        ("company_role_fit",         "TEXT"),
+        ("relevant_role_families",   "TEXT"),
+        ("source_institutes",        "TEXT"),
+        ("verified_current_company", "INTEGER DEFAULT 0"),
+        ("discovered_for_role_family", "TEXT"),
+        ("evidence_url",             "TEXT"),
+        ("confidence_score",         "INTEGER DEFAULT 70"),
+        ("manual_review_required",   "INTEGER DEFAULT 1"),
+        ("allowed_for_auto_outreach","INTEGER DEFAULT 0"),
+    ]
+    for col, defn in _hr_migrations:
+        if col not in hr_cols:
+            conn.execute(f"ALTER TABLE hr_contacts ADD COLUMN {col} {defn}")
+    conn.execute("UPDATE contacts SET allowed_for_auto_outreach=0 WHERE source_type='guessed_role_email'")
+    conn.execute(
+        """
+        DELETE FROM contacts
+        WHERE source_type='guessed_role_email'
+          AND (
+            lower(company_name) IN ('hire feed','linkedin','naukri','internshala','google alerts')
+            OR lower(company_name) LIKE '%jobs feed%'
+            OR lower(company_name) LIKE '%hire feed%'
+            OR lower(company_name) LIKE '%alert feed%'
+            OR lower(company_domain) LIKE '%linkedin.com%'
+            OR lower(company_domain) LIKE '%naukri.com%'
+            OR lower(company_domain) LIKE '%internshala.com%'
+            OR lower(company_domain) LIKE '%google.com%'
+            OR lower(company_domain) LIKE '%feed%'
+            OR lower(company_domain) LIKE '%alert%'
+          )
+        """
+    )
     conn.commit()
     conn.close()
+
+
+def normalize_company_name(name):
+    return " ".join(str(name or "").lower().strip().split())
 
 
 def insert_job(db_path, job):
@@ -131,7 +276,75 @@ def get_job_by_url(db_path, url):
     conn = get_connection(db_path)
     row = conn.execute("SELECT * FROM jobs WHERE url=?", (url,)).fetchone()
     conn.close()
-    return dict(row) if row else None
+    return decoded_job(row) if row else None
+
+
+def get_job(db_path, job_id):
+    conn = get_connection(db_path)
+    row = conn.execute("SELECT * FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+    conn.close()
+    return decoded_job(row) if row else None
+
+
+def get_jobs(db_path, limit=100, *, enrichment_pending=False):
+    conn = get_connection(db_path)
+    if enrichment_pending:
+        rows = conn.execute(
+            """
+            SELECT * FROM jobs
+            WHERE COALESCE(enrichment_status, 'PENDING') IN ('PENDING','FAILED','PARTIAL')
+            ORDER BY found_at DESC LIMIT ?
+            """,
+            (int(limit),),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM jobs ORDER BY found_at DESC LIMIT ?", (int(limit),)).fetchall()
+    conn.close()
+    return [decoded_job(row) for row in rows]
+
+
+def update_job_enrichment(db_path, job_id, result):
+    """Store only non-sensitive facts obtained from the public job page."""
+    allowed = {
+        "full_description", "responsibilities", "requirements", "required_skills",
+        "preferred_skills", "required_experience_min", "required_experience_max",
+        "education_requirement", "employment_type", "remote_type", "location",
+        "application_url", "ats_provider", "company_career_url",
+    }
+    fields = {
+        key: value for key, value in (result.fields or {}).items()
+        if key in allowed and value not in (None, "", [], {})
+    }
+    for key in ("requirements", "required_skills", "preferred_skills"):
+        if key in fields and isinstance(fields[key], (list, dict)):
+            fields[key] = json.dumps(fields[key], ensure_ascii=False)
+    fields.update(
+        {
+            "enrichment_status": result.status,
+            "enrichment_error": result.error or "",
+            "last_enriched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
+    )
+    assignments = ", ".join(f"{name}=?" for name in fields)
+    conn = get_connection(db_path)
+    try:
+        conn.execute(f"UPDATE jobs SET {assignments} WHERE id=?", (*fields.values(), int(job_id)))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def decoded_job(row):
+    """Decode JSON collection columns without changing legacy row contracts."""
+    job = dict(row)
+    for key in ("requirements", "required_skills", "preferred_skills"):
+        value = job.get(key)
+        if isinstance(value, str) and value.strip().startswith(("[", "{")):
+            try:
+                job[key] = json.loads(value)
+            except json.JSONDecodeError:
+                pass
+    return job
 
 
 def get_recent_jobs_for_enrichment(db_path, limit=50):
@@ -140,9 +353,93 @@ def get_recent_jobs_for_enrichment(db_path, limit=50):
         """
         SELECT j.*
         FROM jobs j
-        LEFT JOIN contacts c ON c.opportunity_id = j.id
+        LEFT JOIN contacts c ON c.opportunity_id = j.id AND c.confidence_score >= 80
         WHERE c.id IS NULL
         ORDER BY j.found_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_recent_companies_from_jobs(db_path, limit=50):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT company AS name, MAX(url) AS source_url, MAX(found_at) AS last_found
+        FROM jobs
+        WHERE company IS NOT NULL AND trim(company) != ''
+        GROUP BY lower(trim(company))
+        ORDER BY MAX(found_at) DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_company(db_path, name):
+    conn = get_connection(db_path)
+    normalized = normalize_company_name(name)
+    row = conn.execute("SELECT * FROM companies WHERE normalized_name=?", (normalized,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_company(db_path, company):
+    conn = get_connection(db_path)
+    now = datetime.now().isoformat()
+    payload = {
+        "name": company.get("name", ""),
+        "normalized_name": company.get("normalized_name") or normalize_company_name(company.get("name", "")),
+        "official_domain": company.get("official_domain", ""),
+        "domain_confidence": int(company.get("domain_confidence") or 0),
+        "careers_url": company.get("careers_url", ""),
+        "contact_url": company.get("contact_url", ""),
+        "ats_platform": company.get("ats_platform", ""),
+        "source_url": company.get("source_url", ""),
+        "source_type": company.get("source_type", ""),
+        "evidence_text": company.get("evidence_text", ""),
+        "updated_at": now,
+    }
+    try:
+        conn.execute(
+            """
+            INSERT INTO companies
+            (name,normalized_name,official_domain,domain_confidence,careers_url,
+             contact_url,ats_platform,source_url,source_type,evidence_text,updated_at)
+            VALUES
+            (:name,:normalized_name,:official_domain,:domain_confidence,:careers_url,
+             :contact_url,:ats_platform,:source_url,:source_type,:evidence_text,:updated_at)
+            ON CONFLICT(normalized_name) DO UPDATE SET
+                name=excluded.name,
+                official_domain=excluded.official_domain,
+                domain_confidence=excluded.domain_confidence,
+                careers_url=excluded.careers_url,
+                contact_url=excluded.contact_url,
+                ats_platform=excluded.ats_platform,
+                source_url=excluded.source_url,
+                source_type=excluded.source_type,
+                evidence_text=excluded.evidence_text,
+                updated_at=excluded.updated_at
+            """,
+            payload,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_companies(db_path, limit=100000):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM companies
+        ORDER BY domain_confidence DESC, updated_at DESC
         LIMIT ?
         """,
         (limit,),
@@ -174,7 +471,7 @@ def get_contacts_for_opportunity(db_path, opportunity_id, min_confidence=0, limi
     return [dict(r) for r in rows]
 
 
-def get_contacts(db_path, min_confidence=0, limit=50):
+def get_contacts(db_path, min_confidence=0, limit=50, include_guesses=False):
     conn = get_connection(db_path)
     rows = conn.execute(
         """
@@ -182,16 +479,55 @@ def get_contacts(db_path, min_confidence=0, limit=50):
         FROM contacts c
         LEFT JOIN jobs j ON j.id = c.opportunity_id
         WHERE c.confidence_score >= ?
+          AND c.confidence_score > 0
+          AND COALESCE(c.email_category,'') NOT IN ('excluded_non_hiring_email','invalid_email','other_public_email')
+          AND (? OR c.source_type != 'guessed_role_email')
         ORDER BY c.confidence_score DESC, c.last_seen_at DESC
         LIMIT ?
         """,
-        (min_confidence, limit),
+        (min_confidence, int(bool(include_guesses)), limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_contact_guesses(db_path, limit=100000):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT c.*, j.title AS opportunity_title, j.url AS opportunity_url
+        FROM contacts c
+        LEFT JOIN jobs j ON j.id = c.opportunity_id
+        WHERE c.source_type='guessed_role_email'
+        ORDER BY c.company_name, c.email
+        LIMIT ?
+        """,
+        (limit,),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
 
 def insert_contact(db_path, contact):
+    from enrichment.contact_classifier import classify_contact
+
+    classified = classify_contact(contact) if contact.get("email") else None
+    if classified:
+        if not classified["is_valid"] or classified["excluded"] or classified["confidence_score"] <= 0:
+            return False
+        contact = {
+            **contact,
+            "email": classified["email"],
+            "email_category": classified["email_category"],
+            "confidence_score": classified["confidence_score"],
+            "role_title": classified["role_title"] or contact.get("role_title", ""),
+            "contact_name": classified["contact_name"] or contact.get("contact_name", ""),
+            "source_type": classified.get("source_type") or contact.get("source_type", ""),
+            "allowed_for_auto_outreach": classified["allowed_for_auto_outreach"],
+        }
+    elif int(contact.get("confidence_score") or 0) <= 0:
+        return False
+
     conn = get_connection(db_path)
     now = datetime.now().isoformat()
     payload = {
@@ -204,6 +540,9 @@ def insert_contact(db_path, contact):
         "linkedin_url": contact.get("linkedin_url", ""),
         "source_url": contact.get("source_url", ""),
         "source_type": contact.get("source_type", "public_page"),
+        "evidence_text": contact.get("evidence_text", ""),
+        "email_category": contact.get("email_category", ""),
+        "allowed_for_auto_outreach": int(bool(contact.get("allowed_for_auto_outreach", False))),
         "confidence_score": int(contact.get("confidence_score") or 0),
         "last_seen_at": now,
     }
@@ -212,10 +551,12 @@ def insert_contact(db_path, contact):
             """
             INSERT INTO contacts
             (opportunity_id,company_name,company_domain,contact_name,role_title,email,
-             linkedin_url,source_url,source_type,confidence_score,last_seen_at)
+             linkedin_url,source_url,source_type,evidence_text,email_category,allowed_for_auto_outreach,
+             confidence_score,last_seen_at)
             VALUES
             (:opportunity_id,:company_name,:company_domain,:contact_name,:role_title,:email,
-             :linkedin_url,:source_url,:source_type,:confidence_score,:last_seen_at)
+             :linkedin_url,:source_url,:source_type,:evidence_text,:email_category,:allowed_for_auto_outreach,
+             :confidence_score,:last_seen_at)
             ON CONFLICT(email, company_domain, source_url) DO UPDATE SET
                 opportunity_id=excluded.opportunity_id,
                 company_name=excluded.company_name,
@@ -223,6 +564,9 @@ def insert_contact(db_path, contact):
                 role_title=excluded.role_title,
                 linkedin_url=excluded.linkedin_url,
                 source_type=excluded.source_type,
+                evidence_text=excluded.evidence_text,
+                email_category=excluded.email_category,
+                allowed_for_auto_outreach=excluded.allowed_for_auto_outreach,
                 confidence_score=MAX(contacts.confidence_score, excluded.confidence_score),
                 last_seen_at=excluded.last_seen_at
             """,
@@ -237,12 +581,16 @@ def insert_contact(db_path, contact):
 
 def get_contact_stats(db_path):
     conn = get_connection(db_path)
-    total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+    total = conn.execute("SELECT COUNT(*) FROM contacts WHERE source_type != 'guessed_role_email'").fetchone()[0]
+    guesses = conn.execute("SELECT COUNT(*) FROM contacts WHERE source_type='guessed_role_email'").fetchone()[0]
+    excluded = conn.execute(
+        "SELECT COUNT(*) FROM contacts WHERE confidence_score <= 0 OR COALESCE(email_category,'')='excluded_non_hiring_email'"
+    ).fetchone()[0]
     high_confidence = conn.execute(
-        "SELECT COUNT(*) FROM contacts WHERE confidence_score >= 70"
+        "SELECT COUNT(*) FROM contacts WHERE confidence_score >= 80 AND source_type != 'guessed_role_email'"
     ).fetchone()[0]
     conn.close()
-    return {"total": total, "high_confidence": high_confidence}
+    return {"total": total, "high_confidence": high_confidence, "guesses": guesses, "excluded": excluded}
 
 
 def mark_jobs_notified(db_path, job_ids):
@@ -384,3 +732,252 @@ def get_outreach_stats(db_path):
     rows = conn.execute("SELECT status, COUNT(*) as n FROM outreach GROUP BY status").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# target_companies
+# ---------------------------------------------------------------------------
+
+def _norm_company(name):
+    return " ".join(str(name or "").lower().strip().split())
+
+
+def upsert_target_company(db_path, company):
+    conn = get_connection(db_path)
+    import json
+    now = datetime.now().isoformat()
+
+    def _j(v):
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else json.dumps(v)
+
+    payload = {
+        "company": company.get("company", ""),
+        "normalized_company": _norm_company(company.get("company", "")),
+        "domain": company.get("domain", ""),
+        "company_category": company.get("company_category", ""),
+        "size_tier": company.get("size_tier", ""),
+        "source_institutes": _j(company.get("source_institutes")),
+        "likely_role_families": _j(company.get("likely_role_families")),
+        "specific_roles_offered": _j(company.get("specific_roles_offered")),
+        "evidence_url": company.get("evidence_url", ""),
+        "evidence_text": company.get("evidence_text", ""),
+        "priority_score": int(company.get("priority_score") or 70),
+        "confidence_score": int(company.get("confidence_score") or 70),
+        "notes": company.get("notes", ""),
+        "updated_at": now,
+    }
+    try:
+        conn.execute(
+            """
+            INSERT INTO target_companies
+            (company,normalized_company,domain,company_category,size_tier,
+             source_institutes,likely_role_families,specific_roles_offered,
+             evidence_url,evidence_text,priority_score,confidence_score,notes,updated_at)
+            VALUES
+            (:company,:normalized_company,:domain,:company_category,:size_tier,
+             :source_institutes,:likely_role_families,:specific_roles_offered,
+             :evidence_url,:evidence_text,:priority_score,:confidence_score,:notes,:updated_at)
+            ON CONFLICT(normalized_company) DO UPDATE SET
+                company=excluded.company,
+                domain=COALESCE(NULLIF(excluded.domain,''), target_companies.domain),
+                company_category=COALESCE(NULLIF(excluded.company_category,''), target_companies.company_category),
+                size_tier=COALESCE(NULLIF(excluded.size_tier,''), target_companies.size_tier),
+                source_institutes=COALESCE(NULLIF(excluded.source_institutes,''), target_companies.source_institutes),
+                likely_role_families=COALESCE(NULLIF(excluded.likely_role_families,''), target_companies.likely_role_families),
+                specific_roles_offered=COALESCE(NULLIF(excluded.specific_roles_offered,''), target_companies.specific_roles_offered),
+                evidence_url=COALESCE(NULLIF(excluded.evidence_url,''), target_companies.evidence_url),
+                evidence_text=COALESCE(NULLIF(excluded.evidence_text,''), target_companies.evidence_text),
+                priority_score=MAX(target_companies.priority_score, excluded.priority_score),
+                confidence_score=MAX(target_companies.confidence_score, excluded.confidence_score),
+                notes=COALESCE(NULLIF(excluded.notes,''), target_companies.notes),
+                updated_at=excluded.updated_at
+            """,
+            payload,
+        )
+        inserted = conn.total_changes > 0
+        conn.commit()
+        return inserted
+    finally:
+        conn.close()
+
+
+def get_target_companies(db_path, min_priority=0, category=None, limit=2000):
+    conn = get_connection(db_path)
+    if category:
+        rows = conn.execute(
+            "SELECT * FROM target_companies WHERE priority_score >= ? AND company_category = ? "
+            "ORDER BY priority_score DESC, company LIMIT ?",
+            (min_priority, category, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM target_companies WHERE priority_score >= ? "
+            "ORDER BY priority_score DESC, company LIMIT ?",
+            (min_priority, limit),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_target_company_stats(db_path):
+    conn = get_connection(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM target_companies").fetchone()[0]
+    by_category = [
+        dict(r) for r in conn.execute(
+            "SELECT company_category, COUNT(*) as n FROM target_companies "
+            "GROUP BY company_category ORDER BY n DESC"
+        ).fetchall()
+    ]
+    by_priority = {
+        "high": conn.execute("SELECT COUNT(*) FROM target_companies WHERE priority_score >= 90").fetchone()[0],
+        "mid": conn.execute("SELECT COUNT(*) FROM target_companies WHERE priority_score >= 70 AND priority_score < 90").fetchone()[0],
+        "low": conn.execute("SELECT COUNT(*) FROM target_companies WHERE priority_score < 70").fetchone()[0],
+    }
+    total_roles = conn.execute("SELECT COUNT(*) FROM company_roles").fetchone()[0]
+    conn.close()
+    return {"total": total, "by_category": by_category, "by_priority": by_priority, "total_roles": total_roles}
+
+
+# ---------------------------------------------------------------------------
+# company_roles
+# ---------------------------------------------------------------------------
+
+def insert_company_role(db_path, role):
+    conn = get_connection(db_path)
+    now = datetime.now().isoformat()
+    try:
+        conn.execute(
+            """
+            INSERT INTO company_roles
+            (company_id,company,role_title,role_family,source_institute,
+             evidence_url,confidence_score,notes,created_at)
+            VALUES
+            (:company_id,:company,:role_title,:role_family,:source_institute,
+             :evidence_url,:confidence_score,:notes,:created_at)
+            """,
+            {
+                "company_id": role.get("company_id"),
+                "company": role.get("company", ""),
+                "role_title": role.get("role_title", ""),
+                "role_family": role.get("role_family", ""),
+                "source_institute": role.get("source_institute", ""),
+                "evidence_url": role.get("evidence_url", ""),
+                "confidence_score": int(role.get("confidence_score") or 70),
+                "notes": role.get("notes", ""),
+                "created_at": now,
+            },
+        )
+        conn.commit()
+        return conn.total_changes > 0
+    finally:
+        conn.close()
+
+
+def get_company_roles(db_path, company=None, limit=5000):
+    conn = get_connection(db_path)
+    if company:
+        rows = conn.execute(
+            "SELECT * FROM company_roles WHERE lower(company)=lower(?) ORDER BY confidence_score DESC LIMIT ?",
+            (company, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM company_roles ORDER BY confidence_score DESC, company LIMIT ?",
+            (limit,),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Extended HR contacts (DoHSS-aware)
+# ---------------------------------------------------------------------------
+
+def insert_hr_extended(db_path, hr):
+    import json
+    conn = get_connection(db_path)
+
+    def _j(v):
+        if v is None:
+            return ""
+        return v if isinstance(v, str) else json.dumps(v)
+
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO hr_contacts
+            (name,company,designation,email,linkedin_url,source,notes,
+             company_role_fit,relevant_role_families,source_institutes,
+             verified_current_company,discovered_for_role_family,evidence_url,
+             confidence_score,manual_review_required,allowed_for_auto_outreach)
+            VALUES
+            (:name,:company,:designation,:email,:linkedin_url,:source,:notes,
+             :company_role_fit,:relevant_role_families,:source_institutes,
+             :verified_current_company,:discovered_for_role_family,:evidence_url,
+             :confidence_score,:manual_review_required,:allowed_for_auto_outreach)
+            """,
+            {
+                "name": hr.get("name", ""),
+                "company": hr.get("company", ""),
+                "designation": hr.get("designation", ""),
+                "email": hr.get("email", ""),
+                "linkedin_url": hr.get("linkedin_url", ""),
+                "source": hr.get("source", "linkedin_web_search"),
+                "notes": hr.get("notes", ""),
+                "company_role_fit": hr.get("company_role_fit", ""),
+                "relevant_role_families": _j(hr.get("relevant_role_families")),
+                "source_institutes": _j(hr.get("source_institutes")),
+                "verified_current_company": int(bool(hr.get("verified_current_company", False))),
+                "discovered_for_role_family": hr.get("discovered_for_role_family", ""),
+                "evidence_url": hr.get("evidence_url", ""),
+                "confidence_score": int(hr.get("confidence_score") or 70),
+                "manual_review_required": int(bool(hr.get("manual_review_required", True))),
+                "allowed_for_auto_outreach": int(bool(hr.get("allowed_for_auto_outreach", False))),
+            },
+        )
+        inserted = conn.total_changes > 0
+        conn.commit()
+        return inserted
+    finally:
+        conn.close()
+
+
+def get_hr_contacts_dohss(db_path, min_confidence=70, limit=1000):
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """
+        SELECT h.*,
+               tc.company_category,
+               tc.priority_score AS company_priority
+        FROM hr_contacts h
+        LEFT JOIN target_companies tc ON lower(trim(h.company)) = tc.normalized_company
+        WHERE h.confidence_score >= ?
+        ORDER BY h.confidence_score DESC, tc.priority_score DESC, h.added_at DESC
+        LIMIT ?
+        """,
+        (min_confidence, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_hr_stats_dohss(db_path):
+    conn = get_connection(db_path)
+    total = conn.execute("SELECT COUNT(*) FROM hr_contacts").fetchone()[0]
+    high = conn.execute("SELECT COUNT(*) FROM hr_contacts WHERE confidence_score >= 90").fetchone()[0]
+    mid = conn.execute("SELECT COUNT(*) FROM hr_contacts WHERE confidence_score >= 70 AND confidence_score < 90").fetchone()[0]
+    needs_review = conn.execute("SELECT COUNT(*) FROM hr_contacts WHERE manual_review_required=1").fetchone()[0]
+    auto_ready = conn.execute("SELECT COUNT(*) FROM hr_contacts WHERE allowed_for_auto_outreach=1").fetchone()[0]
+    by_company = [
+        dict(r) for r in conn.execute(
+            "SELECT company, COUNT(*) as n FROM hr_contacts GROUP BY lower(trim(company)) ORDER BY n DESC LIMIT 20"
+        ).fetchall()
+    ]
+    conn.close()
+    return {
+        "total": total, "high_confidence": high, "mid_confidence": mid,
+        "needs_review": needs_review, "auto_ready": auto_ready,
+        "by_company": by_company,
+    }

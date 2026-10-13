@@ -3,7 +3,27 @@ venv/
 __pycache__/
 *.pyc
 pipeline.log
+logs/
+*.whl
 pdfs/
+exports/
 .env
 .vscode/
 config.local.yaml
+
+# Private candidate and application-preparation data. Only *.example.yaml files
+# in candidate/ are safe to commit.
+candidate/profile.yaml
+candidate/application_answers.yaml
+candidate/*.private.yaml
+data/private/
+private/
+resumes/
+cover_letters/
+application_artifacts/
+data/*.corrupt
+data/dohss.db
+data/telegram_dohss_state.json
+
+*.session
+*.session-journal

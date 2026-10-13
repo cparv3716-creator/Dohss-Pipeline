@@ -1,0 +1,33 @@
+version: 1
+profile:
+  full_name: {value: null, verified: false, unknown: true, source: ""}
+  email: {value: null, verified: false, unknown: true, source: ""}
+  phone: {value: null, verified: false, unknown: true, source: ""}
+  city: {value: null, verified: false, unknown: true, source: ""}
+  linkedin: {value: null, verified: false, unknown: true, source: ""}
+  github: {value: null, verified: false, unknown: true, source: ""}
+  portfolio: {value: null, verified: false, unknown: true, source: ""}
+  education: {value: null, verified: false, unknown: true, source: ""}
+  degrees: {value: null, verified: false, unknown: true, source: ""}
+  institutions: {value: null, verified: false, unknown: true, source: ""}
+  graduation_dates: {value: null, verified: false, unknown: true, source: ""}
+  cgpa: {value: null, verified: false, unknown: true, source: ""}
+  work_experience: {value: null, verified: false, unknown: true, source: ""}
+  internships: {value: null, verified: false, unknown: true, source: ""}
+  projects: {value: null, verified: false, unknown: true, source: ""}
+  research: {value: null, verified: false, unknown: true, source: ""}
+  skills: {value: null, verified: false, unknown: true, source: ""}
+  programming_languages: {value: null, verified: false, unknown: true, source: ""}
+  software_tools: {value: null, verified: false, unknown: true, source: ""}
+  experience_levels: {value: null, verified: false, unknown: true, source: ""}
+  years_of_experience: {value: null, verified: false, unknown: true, source: ""}
+  target_roles: {value: null, verified: false, unknown: true, source: ""}
+  preferred_locations: {value: null, verified: false, unknown: true, source: ""}
+  remote_preference: {value: null, verified: false, unknown: true, source: ""}
+  relocation_preferences: {value: null, verified: false, unknown: true, source: ""}
+  employment_type: {value: null, verified: false, unknown: true, source: ""}
+  notice_period: {value: null, verified: false, unknown: true, source: ""}
+  work_authorization: {value: null, verified: false, unknown: true, source: ""}
+  visa_sponsorship_requirements: {value: null, verified: false, unknown: true, source: ""}
+  salary_preferences: {value: null, verified: false, unknown: true, source: ""}
+  application_preferences: {value: null, verified: false, unknown: true, source: ""}

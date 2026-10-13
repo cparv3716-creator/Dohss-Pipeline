@@ -115,6 +115,16 @@ def process_new_pdfs(config, db_path):
         data_rows = parse_pdf(local, row["institute"], row["id"])
         if data_rows:
             db.insert_placement_data(db_path, data_rows)
+        # NEW: mine named company SPOC / recruiter / coordinator contacts.
+        try:
+            from enrichment.placement_contacts import extract_from_pdf, save_placement_contacts
+            contacts = extract_from_pdf(local, institute=row["institute"], source_url=row["url"])
+            saved = save_placement_contacts(db_path, row["institute"], contacts)
+            if saved:
+                logger.info("Placement contacts: saved %d named contact(s) from %s",
+                            saved, row["filename"])
+        except Exception as exc:
+            logger.warning("Placement contact extraction skipped for %s: %s", row["filename"], exc)
         conn = db.get_connection(db_path)
         conn.execute("UPDATE placement_pdfs SET parsed=1 WHERE id=?", (row["id"],))
         conn.commit()

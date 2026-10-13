@@ -116,9 +116,17 @@ database:
   path: data/pipeline.db
 pdf_storage:
   directory: pdfs/
+search:
+  brave_api_key: ""
+  serpapi_key: ""
+  bing_api_key: ""
 enrichment:
   enabled: true
-  max_contacts_per_opportunity: 3
-  timeout_seconds: 15
-  min_confidence_for_alert: 70
-  hunter_enabled: false
+  max_pages_per_company: 10
+  max_search_results_per_query: 5
+  request_timeout_seconds: 10
+  max_contacts_per_opportunity: 10
+  min_telegram_contact_confidence: 80
+  hunter:
+    enabled: false
+    api_key: ""

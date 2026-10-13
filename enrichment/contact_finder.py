@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT = 15
+DEFAULT_TIMEOUT = 10
 DEFAULT_MAX_CONTACTS = 3
 
 ROLE_EMAIL_PREFIXES = {
@@ -169,28 +169,33 @@ def extract_public_emails_from_url(url):
 
 
 def score_contact(contact):
-    """Score a public contact from 0-100 based on source and hiring relevance."""
-    score = 25
     email = (contact.get("email") or "").lower()
     source_url = (contact.get("source_url") or "").lower()
     source_type = (contact.get("source_type") or "").lower()
     company_domain = (contact.get("company_domain") or "").lower()
+    role_title = (contact.get("role_title") or "").lower()
+    contact_name = contact.get("contact_name") or ""
 
-    if email:
-        score += 20
-    if _is_role_email(email):
-        score += 25
-    if company_domain and email.endswith(f"@{company_domain}"):
-        score += 15
-    if any(hint in source_url for hint in HIRING_HINTS):
-        score += 10
-    if source_type == "mailto":
-        score += 5
-    if source_type == "hunter":
-        score += 10
-    if not _is_role_email(email):
-        score -= 30
-    return max(0, min(100, score))
+    has_hr_role = any(hint in role_title for hint in HIRING_HINTS)
+    if contact_name and has_hr_role and email:
+        return 95
+    if email and company_domain and email.endswith(f"@{company_domain}") and _is_role_email(email):
+        return 85
+    if email and company_domain and email.endswith(f"@{company_domain}") and any(
+        path in source_url for path in ("/contact", "/careers", "/jobs")
+    ):
+        return 75
+    if contact_name and contact.get("linkedin_url") and has_hr_role:
+        return 65
+    if email and _email_domain(email) and _is_role_email(email):
+        return 70
+    if email and _email_domain(email):
+        local = email.split("@", 1)[0]
+        if local.split(".", 1)[0] in {"info", "contact", "hello"}:
+            return 60
+    if source_type == "hunter_api" and email and has_hr_role:
+        return 80
+    return 0
 
 
 def _contacts_from_url(url, company_name="", company_domain="", timeout_seconds=DEFAULT_TIMEOUT):
@@ -217,7 +222,12 @@ def _get_hunter_key(config=None):
         return key
     if not config:
         return ""
-    cfg_key = str(config.get("enrichment", {}).get("hunter_api_key", "")).strip()
+    enrichment = config.get("enrichment", {})
+    hunter = enrichment.get("hunter", {})
+    if isinstance(hunter, dict):
+        cfg_key = str(hunter.get("api_key", "")).strip()
+    else:
+        cfg_key = str(enrichment.get("hunter_api_key", "")).strip()
     if not cfg_key or "YOUR_" in cfg_key or "PASTE_" in cfg_key:
         return ""
     return cfg_key
@@ -226,7 +236,11 @@ def _get_hunter_key(config=None):
 def _hunter_contacts(company_name, company_domain, config=None, timeout_seconds=DEFAULT_TIMEOUT):
     hunter_requested = bool(os.environ.get("HUNTER_API_KEY", "").strip())
     if config:
-        hunter_requested = hunter_requested or config.get("enrichment", {}).get("hunter_enabled", False)
+        enrichment = config.get("enrichment", {})
+        hunter = enrichment.get("hunter", {})
+        hunter_requested = hunter_requested or bool(
+            hunter.get("enabled") if isinstance(hunter, dict) else enrichment.get("hunter_enabled", False)
+        )
     if not hunter_requested:
         return []
     api_key = _get_hunter_key(config)
@@ -250,16 +264,31 @@ def _hunter_contacts(company_name, company_domain, config=None, timeout_seconds=
     contacts = []
     for item in data.get("emails", []):
         email = (item.get("value") or "").lower()
-        if item.get("type") == "personal" or not _is_role_email(email):
+        role_text = " ".join(
+            str(v or "")
+            for v in (
+                item.get("position"),
+                item.get("department"),
+                item.get("seniority"),
+                item.get("type"),
+            )
+        )
+        if item.get("type") == "personal" and not any(k in role_text.lower() for k in HIRING_HINTS):
+            continue
+        if not _is_role_email(email) and not any(k in role_text.lower() for k in HIRING_HINTS):
             continue
         contact = _build_contact(
             email=email,
             source_url=f"https://hunter.io/search/{company_domain}",
-            source_type="hunter",
+            source_type="hunter_api",
             company_name=company_name,
             company_domain=company_domain,
         )
-        contact["role_title"] = item.get("department") or ""
+        contact["contact_name"] = " ".join(
+            p for p in (item.get("first_name") or "", item.get("last_name") or "") if p
+        )
+        contact["role_title"] = role_text.strip()
+        contact["confidence_score"] = score_contact(contact)
         contacts.append(contact)
     return contacts
 
@@ -286,7 +315,8 @@ def _candidate_urls(company_domain, source_url=None):
 def find_company_contacts(company_name, company_domain=None, source_url=None, config=None):
     """Find public role-based hiring contacts for one company/opportunity."""
     cfg = (config or {}).get("enrichment", {})
-    timeout_seconds = int(cfg.get("timeout_seconds", DEFAULT_TIMEOUT))
+    timeout_seconds = int(cfg.get("request_timeout_seconds", cfg.get("timeout_seconds", DEFAULT_TIMEOUT)))
+    timeout_seconds = max(1, min(timeout_seconds, 10))
     max_contacts = int(cfg.get("max_contacts_per_opportunity", DEFAULT_MAX_CONTACTS))
 
     inferred_domain = company_domain or extract_domain(company_name)

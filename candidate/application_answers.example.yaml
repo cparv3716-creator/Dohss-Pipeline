@@ -1,0 +1,32 @@
+version: 1
+# Real answers belong in candidate/application_answers.yaml, which is git-ignored.
+# An answer is usable for automatic preparation only when verified=true and
+# auto_answer_allowed=true. Unknown values stay null.
+answers:
+  FULL_NAME: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  EMAIL: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  PHONE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  CURRENT_CITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  LINKEDIN: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  GITHUB: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  PORTFOLIO: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  HIGHEST_EDUCATION: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  DEGREE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  UNIVERSITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  GRADUATION_YEAR: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  CGPA: {value: null, verified: false, auto_answer_allowed: false, sensitivity: sensitive, source: "", confidence: 0}
+  NOTICE_PERIOD: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  CURRENT_CTC: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}
+  EXPECTED_CTC: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}
+  WORK_AUTHORIZATION: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}
+  VISA_SPONSORSHIP: {value: null, verified: false, auto_answer_allowed: false, sensitivity: highly_sensitive, source: "", confidence: 0}
+  RELOCATION: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  YEARS_OF_EXPERIENCE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  SKILL_EXPERIENCE:
+    - {skill: null, value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  AVAILABILITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  WHY_COMPANY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  WHY_ROLE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  PROJECT_EXAMPLE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  LEADERSHIP_EXAMPLE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  OTHER: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}

@@ -106,6 +106,58 @@ telegram:
   bot_token: YOUR_BOT_TOKEN_HERE
   chat_id: YOUR_CHAT_ID_HERE
   enabled: false
+# Telethon-based hiring-channel harvester (joins channels, reads posts,
+# extracts recruiter contacts). Get api_id / api_hash free from my.telegram.org.
+telegram_scraper:
+  enabled: false
+  api_id: 0
+  api_hash: ""
+  # Telethon stores the login session here after the first OTP login.
+  session: data/tg_session
+  # Discovery controls
+  discover_via_search: true        # search Telegram globally for new channels
+  discover_via_forwards: true      # snowball: follow forwarded-message sources
+  auto_join: true                  # auto-join discovered channels (throttled)
+  max_new_joins_per_run: 15        # keep joins low to protect the account
+  join_delay_seconds: [40, 90]     # random sleep between joins (min,max)
+  # Reading controls
+  max_messages_per_channel: 80     # per run, incremental after first run
+  max_channels_per_run: 60
+  # Search terms used to discover NEW channels and to flag relevant posts
+  keywords:
+  - hiring
+  - "off campus"
+  - fresher jobs
+  - research analyst
+  - policy analyst
+  - economics jobs
+  - data analyst
+  - we are hiring
+  - share resume
+  # Only keep posts whose text matches these intent cues (recruiter is reachable)
+  intent_cues:
+  - "we are hiring"
+  - "we're hiring"
+  - "share your resume"
+  - "share resume"
+  - "send your cv"
+  - "drop your cv"
+  - "dm me"
+  - "apply at"
+  - "mail your resume"
+  - "send cv to"
+  - "looking for"
+  - "urgently hiring"
+  # Starter seed channels (public). Discovery expands this automatically.
+  seed_channels:
+  - jobsstation_official
+  - jobskull
+  - CSE_IT_BCA_MCA_Computer_Jobs
+  - freshersjobsindia
+  - OffCampusJobsUpdates
+  - jobs_and_internships_updates
+  - HiristTech
+  - GoLearningJobs
 notifications:
   new_job_found: true
   new_institute_update: true
@@ -114,11 +166,31 @@ notifications:
   daily_summary_time: 09:00
 database:
   path: data/pipeline.db
+applications:
+  # All paths below are git-ignored. Never point private_db_path at the tracked
+  # public discovery database above.
+  profile_path: candidate/profile.yaml
+  answer_bank_path: candidate/application_answers.yaml
+  private_db_path: data/private/applications.db
+  enrichment_timeout_seconds: 15
+  notify_telegram: false
+  required_questions:
+    - FULL_NAME
+    - EMAIL
+    - PHONE
 pdf_storage:
   directory: pdfs/
+search:
+  brave_api_key: ""
+  serpapi_key: ""
+  bing_api_key: ""
 enrichment:
   enabled: true
-  max_contacts_per_opportunity: 3
-  timeout_seconds: 15
-  min_confidence_for_alert: 70
-  hunter_enabled: false
+  max_pages_per_company: 10
+  max_search_results_per_query: 5
+  request_timeout_seconds: 10
+  max_contacts_per_opportunity: 10
+  min_telegram_contact_confidence: 80
+  hunter:
+    enabled: false
+    api_key: ""

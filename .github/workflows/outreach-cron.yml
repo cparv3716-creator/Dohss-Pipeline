@@ -42,6 +42,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          BING_SEARCH_API_KEY: ${{ secrets.BING_SEARCH_API_KEY }}
         run: |
           python - <<'PY'
           import os
@@ -58,7 +61,8 @@ jobs:
 
           if os.environ.get("HUNTER_API_KEY"):
               config.setdefault("enrichment", {})
-              config["enrichment"]["hunter_enabled"] = True
+              config["enrichment"].setdefault("hunter", {})
+              config["enrichment"]["hunter"]["enabled"] = True
 
           path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
           PY
@@ -66,6 +70,9 @@ jobs:
       - name: Run fetch once
         env:
           HUNTER_API_KEY: ${{ secrets.HUNTER_API_KEY }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          BING_SEARCH_API_KEY: ${{ secrets.BING_SEARCH_API_KEY }}
         run: |
           python main.py fetch-now
 
