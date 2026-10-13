@@ -19,6 +19,8 @@ class ClassifiedQuestion:
 
 
 PATTERNS = (
+    ("FIRST_NAME", r"\b(first|given) name\b"),
+    ("LAST_NAME", r"\b(last|family|surname) name\b"),
     ("FULL_NAME", r"\b(full|legal|your) name\b"),
     ("EMAIL", r"\be-?mail\b"),
     ("PHONE", r"\b(phone|mobile|telephone)\b"),
@@ -49,14 +51,27 @@ SKILL_EXPERIENCE = re.compile(
 )
 
 
+def _skill_from_experience_question(text: str) -> str:
+    patterns = (
+        r"how many\s+years?(?:\s+of)?\s+(.+?)\s+experience\b",
+        r"years?(?:\s+of)?\s+experience\s+(?:do you have\s+)?(?:with|using|in)\s+(.+?)(?:[?.,]|$)",
+        r"worked\s+with\s+(.+?)(?:[?.,]|$)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            return match.group(1).strip(" ?.,")
+    match = SKILL_EXPERIENCE.search(text)
+    if not match:
+        return ""
+    return re.split(r"[?.,]|\bfor\b|\bexperience\b", match.group(1), maxsplit=1, flags=re.I)[0].strip()
+
+
 def classify_question(question: str) -> ClassifiedQuestion:
     text = " ".join(str(question or "").split())
     lower = text.lower()
     if "year" in lower and any(word in lower for word in ("experience", "worked", "working", "using")):
-        skill = ""
-        match = SKILL_EXPERIENCE.search(text)
-        if match:
-            skill = re.split(r"[?.,]|\bfor\b", match.group(1), maxsplit=1, flags=re.I)[0].strip()
+        skill = _skill_from_experience_question(text)
         if not skill or skill.lower() in ("experience", "work experience"):
             return ClassifiedQuestion("YEARS_OF_EXPERIENCE", 85)
         return ClassifiedQuestion("SKILL_EXPERIENCE", 92, skill=skill)

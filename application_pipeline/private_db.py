@@ -10,7 +10,9 @@ from typing import Any, Mapping, Optional
 
 MILESTONE_STATUSES = (
     "DISCOVERED", "ENRICHED", "ELIGIBLE", "SKIPPED", "PREPARING",
-    "READY_TO_APPLY", "NEEDS_REVIEW", "FAILED",
+    "READY_TO_APPLY", "NEEDS_REVIEW", "FAILED", "FORM_INSPECTED",
+    "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION",
+    "BLOCKED", "DRY_RUN_COMPLETE",
 )
 ALL_DOCUMENTED_STATUSES = MILESTONE_STATUSES + ("SUBMITTED",)
 TRANSITIONS = {
@@ -18,10 +20,16 @@ TRANSITIONS = {
     "ENRICHED": {"ELIGIBLE", "SKIPPED", "NEEDS_REVIEW", "FAILED"},
     "ELIGIBLE": {"PREPARING", "SKIPPED", "NEEDS_REVIEW", "FAILED"},
     "PREPARING": {"READY_TO_APPLY", "NEEDS_REVIEW", "FAILED"},
-    "READY_TO_APPLY": {"PREPARING", "NEEDS_REVIEW"},
-    "NEEDS_REVIEW": {"PREPARING", "READY_TO_APPLY", "SKIPPED", "FAILED"},
+    "READY_TO_APPLY": {"PREPARING", "NEEDS_REVIEW", "FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "BLOCKED", "DRY_RUN_COMPLETE"},
+    "NEEDS_REVIEW": {"PREPARING", "READY_TO_APPLY", "SKIPPED", "FAILED", "FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "BLOCKED", "DRY_RUN_COMPLETE"},
     "SKIPPED": set(),
     "FAILED": {"PREPARING", "NEEDS_REVIEW"},
+    "FORM_INSPECTED": {"FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "BLOCKED", "DRY_RUN_COMPLETE"},
+    "FORM_PARTIALLY_FILLED": {"FORM_INSPECTED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "BLOCKED", "DRY_RUN_COMPLETE"},
+    "FORM_READY_FOR_REVIEW": {"FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "NEEDS_USER_ACTION", "BLOCKED", "DRY_RUN_COMPLETE"},
+    "NEEDS_USER_ACTION": {"FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "BLOCKED", "DRY_RUN_COMPLETE"},
+    "BLOCKED": {"FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "DRY_RUN_COMPLETE"},
+    "DRY_RUN_COMPLETE": {"FORM_INSPECTED", "FORM_PARTIALLY_FILLED", "FORM_READY_FOR_REVIEW", "NEEDS_USER_ACTION", "BLOCKED"},
 }
 
 
@@ -77,6 +85,26 @@ def init_private_db(path: str | Path) -> None:
                 reason TEXT,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS application_form_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_id INTEGER NOT NULL REFERENCES applications(id),
+                run_type TEXT NOT NULL,
+                ats_provider TEXT,
+                url TEXT,
+                status TEXT NOT NULL,
+                fields_json TEXT NOT NULL DEFAULT '[]',
+                blockers_json TEXT NOT NULL DEFAULT '[]',
+                validation_json TEXT NOT NULL DEFAULT '[]',
+                screenshot_paths TEXT NOT NULL DEFAULT '[]',
+                html_snapshot_path TEXT,
+                report_path TEXT,
+                resume_path TEXT,
+                submission_guard_events TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_application_form_runs_application
+                ON application_form_runs(application_id, created_at DESC);
             CREATE TRIGGER IF NOT EXISTS prohibit_submission_insert
             BEFORE INSERT ON applications WHEN NEW.status = 'SUBMITTED'
             BEGIN SELECT RAISE(ABORT, 'SUBMITTED is disabled in the preparation milestone'); END;
@@ -215,6 +243,100 @@ def list_applications(path: str | Path, limit: int = 100, job_id: Optional[int] 
             rows = conn.execute("SELECT * FROM applications ORDER BY updated_at DESC LIMIT ?", (limit,)).fetchall()
         else:
             rows = conn.execute("SELECT * FROM applications WHERE job_id=?", (job_id,)).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_application(path: str | Path, application_id: int) -> Optional[dict[str, Any]]:
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT * FROM applications WHERE id=?", (int(application_id),)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_form_run(path: str | Path, application_id: int, run_type: str, ats_provider: str, url: str) -> int:
+    init_private_db(path)
+    if run_type not in ("INSPECT", "DRY_RUN"):
+        raise ValueError(f"invalid browser run type: {run_type}")
+    conn = _connect(path)
+    try:
+        now = _now()
+        cursor = conn.execute(
+            """
+            INSERT INTO application_form_runs
+            (application_id,run_type,ats_provider,url,status,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (int(application_id), run_type, ats_provider, url, "RUNNING", now, now),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def finish_form_run(path: str | Path, run_id: int, report: Mapping[str, Any]) -> None:
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        conn.execute(
+            """
+            UPDATE application_form_runs SET
+              status=?, fields_json=?, blockers_json=?, validation_json=?,
+              screenshot_paths=?, html_snapshot_path=?, report_path=?, resume_path=?,
+              submission_guard_events=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                report.get("run_status", "DRY_RUN_COMPLETE"),
+                _json(report.get("fields", [])),
+                _json(report.get("authentication_blockers", [])),
+                _json(report.get("validation_issues", [])),
+                _json(report.get("screenshot_paths", [])),
+                report.get("html_snapshot_path", ""),
+                report.get("report_path", ""),
+                report.get("resume_path", ""),
+                _json(report.get("submission_requests_blocked", [])),
+                _now(), int(run_id),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_browser_status(path: str | Path, application_id: int, status: str, reason: str, resume_path: str = "") -> None:
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT status FROM applications WHERE id=?", (int(application_id),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise KeyError(application_id)
+    if row["status"] != status:
+        transition_application(path, application_id, status, reason)
+    if resume_path:
+        conn = _connect(path)
+        try:
+            conn.execute("UPDATE applications SET resume_path=?, updated_at=? WHERE id=?", (resume_path, _now(), int(application_id)))
+            conn.commit()
+        finally:
+            conn.close()
+
+
+def get_form_runs(path: str | Path, application_id: int) -> list[dict[str, Any]]:
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        rows = conn.execute(
+            "SELECT * FROM application_form_runs WHERE application_id=? ORDER BY created_at DESC",
+            (int(application_id),),
+        ).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()

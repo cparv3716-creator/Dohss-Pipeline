@@ -1,0 +1,158 @@
+"""Provider-independent ATS interface with no submission capability."""
+from __future__ import annotations
+
+import json
+import re
+from abc import ABC, abstractmethod
+from typing import Any, Optional
+
+from application_pipeline.browser.inspector import detect_page_blockers, inspect_page_fields
+from application_pipeline.browser.models import AnswerStatus, ApplicationField, InspectionResult, ValidationIssue
+from application_pipeline.browser.safety import ResumeArtifact
+
+
+def _string_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value)
+    if isinstance(value, dict):
+        return ", ".join(f"{key}: {item}" for key, item in value.items())
+    return str(value)
+
+
+def _matches(value: Any, option: dict[str, str]) -> bool:
+    desired = _string_value(value).strip().lower()
+    aliases = {desired}
+    if desired in ("true", "yes", "authorized", "willing"):
+        aliases.update(("yes", "true"))
+    if desired in ("false", "no", "not authorized", "not willing"):
+        aliases.update(("no", "false"))
+    return str(option.get("value") or "").strip().lower() in aliases or str(option.get("label") or "").strip().lower() in aliases
+
+
+class ApplicationATSAdapter(ABC):
+    provider = "Unknown"
+    auto_fill_enabled = True
+
+    @abstractmethod
+    def can_handle(self, url: str) -> bool:
+        raise NotImplementedError
+
+    def open_application(self, session: Any, url: str) -> Any:
+        response = session.open(url)
+        try:
+            session.page.locator("form, input, select, textarea").first.wait_for(state="attached", timeout=10_000)
+        except Exception:
+            pass
+        return response
+
+    def inspect_form(self, session: Any) -> InspectionResult:
+        fields = inspect_page_fields(session.page)
+        return InspectionResult(
+            ats_provider=self.provider,
+            url=session.page.url,
+            fields=fields,
+            blockers=detect_page_blockers(session.page),
+            final_submit_controls=session.guard.submit_control_texts(session.page),
+        )
+
+    def extract_questions(self, inspection: InspectionResult) -> list[ApplicationField]:
+        return inspection.fields
+
+    def _frame(self, page: Any, field: ApplicationField) -> Any:
+        for frame in page.frames:
+            if field.frame_url and frame.url == field.frame_url:
+                return frame
+        return page.main_frame
+
+    def _fill_field(self, page: Any, field: ApplicationField) -> None:
+        frame = self._frame(page, field)
+        locator = frame.locator(field.selector)
+        value = field.proposed_value
+        if field.field_type in ("text", "email", "phone", "textarea", "number", "date"):
+            locator.first.fill(_string_value(value))
+        elif field.field_type == "select":
+            option = next((item for item in field.options if _matches(value, item)), None)
+            if not option:
+                raise ValueError("No dropdown option matches the verified answer")
+            locator.first.select_option(value=option["value"])
+        elif field.field_type == "radio":
+            option = next((item for item in field.options if _matches(value, item)), None)
+            if not option:
+                raise ValueError("No radio option matches the verified answer")
+            frame.locator(f'{field.selector}[value={json.dumps(option["value"])}]').first.check()
+        elif field.field_type == "checkbox":
+            truthy = value is True or str(value).strip().lower() in ("yes", "true", "1", "checked")
+            if truthy:
+                locator.first.check()
+            else:
+                locator.first.uncheck()
+        else:
+            raise ValueError(f"Unsupported field type: {field.field_type}")
+        field.current_value = value
+        field.answer_status = AnswerStatus.FILLED.value
+
+    def fill_safe_fields(self, session: Any, fields: list[ApplicationField], resume: Optional[ResumeArtifact] = None) -> bool:
+        if not self.auto_fill_enabled:
+            for field in fields:
+                if field.answer_status == AnswerStatus.PROPOSED.value:
+                    field.answer_status = AnswerStatus.SKIPPED_POLICY.value
+                    field.answer_reason = "GENERIC_ATS_INSPECTION_ONLY"
+            return False
+        for field in fields:
+            if field.answer_status != AnswerStatus.PROPOSED.value:
+                continue
+            try:
+                self._fill_field(session.page, field)
+                session.artifacts.log("field_filled", field_id=field.field_id, question_type=field.canonical_question_type)
+            except Exception as exc:
+                field.answer_status = AnswerStatus.ERROR.value
+                field.answer_reason = f"{type(exc).__name__}: {exc}"
+                session.artifacts.log("field_fill_failed", field_id=field.field_id, error=field.answer_reason)
+
+        resume_uploaded = False
+        if resume:
+            resume_fields = [
+                field for field in fields
+                if field.field_type == "file" and re.search(r"\b(resume|cv)\b", field.raw_question, re.I)
+            ]
+            if resume_fields:
+                field = resume_fields[0]
+                try:
+                    frame = self._frame(session.page, field)
+                    frame.locator(field.selector).first.set_input_files(str(resume.path))
+                    field.current_value = resume.path.name
+                    field.answer_source = "configured_resume"
+                    field.answer_verified = True
+                    field.auto_fill_allowed = True
+                    field.answer_status = AnswerStatus.UPLOADED.value
+                    field.answer_reason = "CONFIGURED_PRIVATE_RESUME"
+                    resume_uploaded = True
+                    session.artifacts.log("resume_uploaded", field_id=field.field_id, filename=resume.path.name)
+                except Exception as exc:
+                    field.answer_status = AnswerStatus.ERROR.value
+                    field.answer_reason = f"{type(exc).__name__}: {exc}"
+        return resume_uploaded
+
+    def validate(self, session: Any, fields: list[ApplicationField]) -> list[ValidationIssue]:
+        issues: list[ValidationIssue] = []
+        for field in fields:
+            if not field.required:
+                continue
+            is_present = field.answer_status in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value)
+            if not is_present and field.current_value not in (None, "", False, []):
+                is_present = True
+            if not is_present:
+                issues.append(ValidationIssue(field.field_id, "REQUIRED_FIELD_UNRESOLVED", f"Required field is unresolved: {field.raw_question}", True))
+        if session.guard.submit_control_texts(session.page):
+            issues.append(ValidationIssue("final_submit", "FINAL_SUBMIT_BLOCKED_BY_POLICY", "Final submission control was detected and deliberately left untouched", False))
+        return issues
+
+    def capture_review(self, session: Any) -> tuple[list[str], str]:
+        screenshot = session.screenshot("review.png", full_page=True)
+        html = session.html_snapshot("review.html")
+        return [screenshot], html
+
+    def close(self, session: Any) -> None:
+        session.close()

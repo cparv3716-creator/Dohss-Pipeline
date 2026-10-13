@@ -15,6 +15,7 @@ from .private_db import get_assessment, list_applications
 
 def settings(config: dict[str, Any]) -> dict[str, Any]:
     app = config.get("applications", {}) or {}
+    browser = app.get("browser", {}) or {}
     return {
         "profile_path": app.get("profile_path", "candidate/profile.yaml"),
         "answer_bank_path": app.get("answer_bank_path", "candidate/application_answers.yaml"),
@@ -22,6 +23,7 @@ def settings(config: dict[str, Any]) -> dict[str, Any]:
         "required_questions": app.get("required_questions", ["FULL_NAME", "EMAIL", "PHONE"]),
         "notify_telegram": bool(app.get("notify_telegram", False)),
         "enrichment_timeout": int(app.get("enrichment_timeout_seconds", 15)),
+        "browser": browser,
     }
 
 
@@ -179,3 +181,67 @@ def json_list(value: Any) -> list[Any]:
         return parsed if isinstance(parsed, list) else []
     except (TypeError, json.JSONDecodeError):
         return []
+
+
+def _browser_service(config: dict[str, Any], args: list[str]):
+    from application_pipeline.browser.safety import ResumePolicy, SafeFillPolicy
+    from application_pipeline.browser.service import BrowserApplicationService
+    from application_pipeline.browser.session import BrowserConfig
+
+    cfg = settings(config)
+    browser = cfg["browser"]
+    headless = "--headed" not in args and bool(browser.get("headless", True))
+    manual_handoff = "--manual-handoff" in args or bool(browser.get("manual_handoff", False))
+    if manual_handoff and headless:
+        raise ValueError("manual handoff requires --headed")
+    browser_config = BrowserConfig(
+        headless=headless,
+        timeout_ms=int(browser.get("timeout_ms", 30_000)),
+        navigation_timeout_ms=int(browser.get("navigation_timeout_ms", 45_000)),
+        slow_mo_ms=int(browser.get("slow_mo_ms", 0)),
+        artifacts_root=str(browser.get("artifacts_root", "data/private/browser_runs")),
+        manual_handoff=manual_handoff,
+        save_html="--no-html" not in args and bool(browser.get("save_html", True)),
+    )
+    policy = SafeFillPolicy(
+        minimum_confidence=int(browser.get("minimum_confidence", 85)),
+        allowed_sensitive_types=set(browser.get("allowed_sensitive_question_types", []) or []),
+        allowed_sensitivities=set(browser.get("allowed_sensitivities", ["public", "private", "personal"]) or []),
+    )
+    resume = ResumePolicy(
+        configured_path=str(browser.get("resume_path", "")),
+        allowed_roots=browser.get("allowed_resume_roots", ["data/private/resumes"]),
+    )
+    return BrowserApplicationService(
+        config.get("database", {}).get("path", "data/pipeline.db"),
+        cfg["private_db_path"], browser_config, policy, resume,
+    )
+
+
+def inspect_application(config: dict[str, Any], application_id: int, args: list[str]):
+    return _browser_service(config, args).inspect(application_id)
+
+
+def dry_run_application(config: dict[str, Any], application_id: int, args: list[str]):
+    profile, bank, _ = _load_private_inputs(config)
+    return _browser_service(config, args).dry_run(application_id, profile, bank)
+
+
+def display_browser_report(report: Any) -> str:
+    payload = report.to_dict()
+    return "\n".join(
+        [
+            f"Company: {payload['company']}",
+            f"Role: {payload['role']}",
+            f"ATS: {payload['ats_provider']}",
+            f"Fields detected: {payload['fields_detected']}",
+            f"Safely filled: {payload['answers_filled']}",
+            f"Unanswered required: {len(payload['missing_answers'])}",
+            f"Sensitive review: {len(payload['sensitive_questions'])}",
+            f"Resume uploaded: {'yes' if payload['resume_uploaded'] else 'no'}",
+            f"Authentication blockers: {', '.join(payload['authentication_blockers']) if payload['authentication_blockers'] else 'none'}",
+            f"Status: {payload['final_status']}",
+            "Submission: BLOCKED BY POLICY",
+            f"Private report: {payload['report_path']}",
+        ]
+    )

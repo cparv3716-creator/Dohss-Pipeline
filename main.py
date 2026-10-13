@@ -1167,6 +1167,29 @@ def cmd_job(config):
         print(f"Application status: {application['status']} | Missing answers: {', '.join(unanswered) if unanswered else '-'}")
 
 
+def _application_id_arg(command):
+    if len(sys.argv) < 3:
+        raise ValueError(f"Usage: python main.py {command} <application_id> [--headed] [--manual-handoff]")
+    try:
+        return int(sys.argv[2])
+    except ValueError as exc:
+        raise ValueError("Application id must be an integer") from exc
+
+
+def cmd_inspect_application(config):
+    from application_pipeline.cli import display_browser_report, inspect_application
+    application_id = _application_id_arg("inspect-application")
+    report = inspect_application(config, application_id, sys.argv[3:])
+    print(display_browser_report(report))
+
+
+def cmd_dry_run_application(config):
+    from application_pipeline.cli import display_browser_report, dry_run_application
+    application_id = _application_id_arg("dry-run-application")
+    report = dry_run_application(config, application_id, sys.argv[3:])
+    print(display_browser_report(report))
+
+
 COMMANDS = {
     "run": cmd_run, "fetch-now": cmd_fetch_now, "dashboard": cmd_dashboard,
     "add-hr": cmd_add_hr, "enrich-contacts": cmd_enrich_contacts,
@@ -1194,6 +1217,8 @@ COMMANDS = {
     "prepare-applications": cmd_prepare_applications,
     "review-applications": cmd_review_applications,
     "job": cmd_job,
+    "inspect-application": cmd_inspect_application,
+    "dry-run-application": cmd_dry_run_application,
     # DoHSS target company + HR commands
     "discover-target-companies": cmd_discover_target_companies,
     "target-company-status": cmd_target_company_status,
@@ -1256,6 +1281,10 @@ DoHSS Placement Intelligence Pipeline
   python main.py review-applications [--limit 100]
                               List private READY_TO_APPLY / NEEDS_REVIEW records
   python main.py job <id>     Show one public job plus private preparation status
+  python main.py inspect-application <application_id> [--headed] [--manual-handoff]
+                              Inspect and store a normalized form without filling
+  python main.py dry-run-application <application_id> [--headed] [--manual-handoff]
+                              Fill only policy-approved fields and stop before submit
 
 --- Companies ---
   python main.py import-company-seeds companies.csv

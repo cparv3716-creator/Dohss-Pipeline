@@ -4,6 +4,8 @@ version: 1
 # auto_answer_allowed=true. Unknown values stay null.
 answers:
   FULL_NAME: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  FIRST_NAME: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
+  LAST_NAME: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
   EMAIL: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
   PHONE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}
   CURRENT_CITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: personal, source: "", confidence: 0}

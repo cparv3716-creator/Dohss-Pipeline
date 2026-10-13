@@ -1,0 +1,14 @@
+<!doctype html>
+<html><body>
+  <form id="application_form" action="/applications" method="post">
+    <div class="field"><label for="first_name">First Name *</label><input id="first_name" name="first_name" required></div>
+    <div class="field"><label for="email">Email *</label><input id="email" name="email" type="email" required></div>
+    <div class="field"><label for="phone">Phone</label><input id="phone" name="phone" type="tel"></div>
+    <div class="field"><label for="notice">What is your notice period? *</label><select id="notice" name="notice" required><option value="">Select</option><option value="30">30 days</option><option value="60">60 days</option></select></div>
+    <fieldset><legend>Are you authorized to work in India? *</legend><label><input type="radio" name="authorized" value="yes" required>Yes</label><label><input type="radio" name="authorized" value="no">No</label></fieldset>
+    <div class="field"><label><input id="updates" type="checkbox" name="updates">Receive recruiting updates</label></div>
+    <div class="field"><label for="resume">Resume/CV *</label><input id="resume" name="resume" type="file" required></div>
+    <div class="field"><label for="why_role">Why are you interested in this role?</label><textarea id="why_role" name="why_role"></textarea></div>
+    <button type="submit">Submit Application</button>
+  </form>
+</body></html>

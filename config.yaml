@@ -178,6 +178,20 @@ applications:
     - FULL_NAME
     - EMAIL
     - PHONE
+  browser:
+    headless: true
+    timeout_ms: 30000
+    navigation_timeout_ms: 45000
+    slow_mo_ms: 0
+    artifacts_root: data/private/browser_runs
+    manual_handoff: false
+    save_html: true
+    minimum_confidence: 85
+    allowed_sensitivities: [public, private, personal]
+    allowed_sensitive_question_types: []
+    resume_path: ""
+    allowed_resume_roots:
+      - data/private/resumes
 pdf_storage:
   directory: pdfs/
 search:
