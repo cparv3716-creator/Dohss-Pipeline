@@ -195,6 +195,8 @@ def main():
             "review-applications",
             "inspect-application <application_id>",
             "dry-run-application <application_id>",
+            "candidate-audit",
+            "review-application <application_id>",
             "job <id>",
         ):
             assert command in help_result.stdout, f"{command} missing from help output"

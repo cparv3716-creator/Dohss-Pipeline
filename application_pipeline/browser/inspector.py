@@ -27,13 +27,18 @@ els => els.filter(el => {
   const nearby = el.closest('.field, .application-field, .form-group, [class*="field"]');
   const nearbyText = nearby?.querySelector('label')?.innerText?.trim() || '';
   const label = labels[0] || el.getAttribute('aria-label') || nearbyText || legend || el.placeholder || el.name || el.id || `field_${index}`;
-  const selector = el.id ? `[id=${JSON.stringify(el.id)}]` : el.name ? `${el.tagName.toLowerCase()}[name=${JSON.stringify(el.name)}]` : `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
-  const options = el.tagName === 'SELECT' ? Array.from(el.options).map(o => ({value: o.value, label: o.text.trim()})) : [];
+  const ariaLabel = el.getAttribute('aria-label') || '';
+  const selector = el.id ? `[id=${JSON.stringify(el.id)}]` : el.name ? `${el.tagName.toLowerCase()}[name=${JSON.stringify(el.name)}]` : ariaLabel ? `${el.tagName.toLowerCase()}[aria-label=${JSON.stringify(ariaLabel)}]` : `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
+  const isCustomSelect = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox';
+  const controlled = el.getAttribute('aria-controls');
+  const optionRoot = controlled ? document.getElementById(controlled) : null;
+  const customOptions = optionRoot ? Array.from(optionRoot.querySelectorAll('[role=option]')).map(o => ({value: o.getAttribute('data-value') || o.innerText.trim(), label: o.innerText.trim()})) : [];
+  const options = el.tagName === 'SELECT' ? Array.from(el.options).map(o => ({value: o.value, label: o.text.trim()})) : customOptions;
   return {
     id: el.id || el.name || `field_${index}`,
     name: el.name || '', tag: el.tagName.toLowerCase(), type: (el.type || '').toLowerCase(),
     label, legend, selector, required: !!el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(labels[0] || nearbyText),
-    custom_select: el.getAttribute('aria-haspopup') === 'listbox',
+    custom_select: isCustomSelect,
     value: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : el.value,
     option_value: el.value || '', option_label: labels[0] || el.value || '', options
   };
@@ -131,7 +136,10 @@ def _field_type(row: Mapping[str, Any]) -> str:
 
 
 def _sensitivity(question_type: str, question: str) -> str:
-    if question_type in {"CURRENT_CTC", "EXPECTED_CTC", "WORK_AUTHORIZATION", "VISA_SPONSORSHIP"}:
+    if question_type in {
+        "CURRENT_CTC", "EXPECTED_CTC", "WORK_AUTHORIZATION", "VISA_SPONSORSHIP",
+        "PRONOUNS", "DEMOGRAPHIC_SELF_ID", "CONSENT",
+    }:
         return "highly_sensitive"
     if re.search(r"criminal|disab|veteran|race|ethnicity|gender|conflict|relative|consent|attest|signature", question, re.I):
         return "highly_sensitive"
@@ -162,6 +170,7 @@ def normalize_fields(rows: Iterable[Mapping[str, Any]], frame_url: str = "") -> 
                 current_value=row.get("value"), canonical_question_type=classified.question_type,
                 skill=classified.skill, sensitivity=_sensitivity(classified.question_type, label),
                 confidence=classified.confidence, selector=str(row.get("selector") or ""), frame_url=frame_url,
+                control_kind="combobox" if row.get("custom_select") else "native",
             )
         )
     for name, group in radio_groups.items():
@@ -180,6 +189,7 @@ def normalize_fields(rows: Iterable[Mapping[str, Any]], frame_url: str = "") -> 
                 current_value=selected, canonical_question_type=classified.question_type,
                 skill=classified.skill, sensitivity=_sensitivity(classified.question_type, label),
                 confidence=classified.confidence, selector=f'input{_css_attribute("name", name)}', frame_url=frame_url,
+                control_kind="radio_group",
             )
         )
     return fields
@@ -189,12 +199,15 @@ def extract_fields_from_html(content: str, frame_url: str = "") -> list[Applicat
     return normalize_fields(_raw_fields_from_html(content), frame_url)
 
 
-def inspect_page_fields(page: Any) -> list[ApplicationField]:
+def inspect_page_fields(page: Any, pass_number: int = 1) -> list[ApplicationField]:
     fields: list[ApplicationField] = []
     for frame in page.frames:
         try:
-            rows = frame.locator("input, textarea, select").evaluate_all(LIVE_EXTRACTION_SCRIPT)
-            fields.extend(normalize_fields(rows, frame.url))
+            rows = frame.locator("input, textarea, select, [role=combobox], button[aria-haspopup=listbox]").evaluate_all(LIVE_EXTRACTION_SCRIPT)
+            normalized = normalize_fields(rows, frame.url)
+            for item in normalized:
+                item.detected_pass = pass_number
+            fields.extend(normalized)
         except Exception:
             continue
     seen = set()
@@ -207,8 +220,43 @@ def inspect_page_fields(page: Any) -> list[ApplicationField]:
     return unique
 
 
+def field_identity(item: ApplicationField) -> tuple[str, str, str, str]:
+    return (item.frame_url, item.field_id, item.raw_question, item.field_type)
+
+
+def merge_observed_fields(
+    observed: dict[tuple[str, str, str, str], ApplicationField],
+    current: list[ApplicationField],
+) -> tuple[list[ApplicationField], int]:
+    """Keep prior safe-fill results while adding newly revealed controls."""
+    current_keys = {field_identity(item) for item in current}
+    for item in observed.values():
+        item.visible = field_identity(item) in current_keys
+    new_count = 0
+    for item in current:
+        key = field_identity(item)
+        previous = observed.get(key)
+        if previous is None:
+            observed[key] = item
+            new_count += 1
+            continue
+        item.answer_source = previous.answer_source
+        item.answer_verified = previous.answer_verified
+        item.auto_fill_allowed = previous.auto_fill_allowed
+        item.answer_status = previous.answer_status
+        item.answer_reason = previous.answer_reason
+        item.proposed_value = previous.proposed_value
+        item.confidence = previous.confidence
+        if previous.answer_status in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value):
+            item.current_value = previous.current_value
+        observed[key] = item
+    return list(observed.values()), new_count
+
+
 def resolve_answers(fields: list[ApplicationField], profile: CandidateProfile, bank: AnswerBank, policy: SafeFillPolicy) -> list[ApplicationField]:
     for item in fields:
+        if not item.visible or item.answer_status in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value):
+            continue
         if item.field_type == FieldType.FILE.value:
             item.answer_status = AnswerStatus.UNRESOLVED.value
             item.answer_reason = "FILE_REQUIRES_CONFIGURED_ARTIFACT"

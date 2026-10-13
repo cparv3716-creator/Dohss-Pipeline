@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -16,8 +17,9 @@ from application_pipeline.private_db import (
     update_browser_status,
 )
 
-from .inspector import resolve_answers
+from .inspector import merge_observed_fields, resolve_answers
 from .models import AnswerStatus, DryRunReport, ValidationIssue
+from application_pipeline.readiness import calculate_readiness
 from .safety import ResumePolicy, SafeFillPolicy
 from .session import BrowserConfig, BrowserSession
 
@@ -140,39 +142,80 @@ class BrowserApplicationService:
         try:
             with self.session_factory(self.browser_config, application_id) as session:
                 adapter.open_application(session, url)
-                inspection = adapter.inspect_form(session)
-                if inspection.blockers and session.manual_user_handoff(inspection.blockers):
-                    inspection = adapter.inspect_form(session)
+                inspection = adapter.inspect_form(session, 1)
                 screenshots = [session.screenshot("before_fill.png")]
                 validation: list[ValidationIssue] = []
                 resume = None
                 resume_uploaded = False
-                if inspection.blockers:
+                try:
+                    resume = self.resume_policy.validate()
+                except ValueError as exc:
+                    validation.append(ValidationIssue("resume", "RESUME_POLICY_BLOCKED", type(exc).__name__, False))
+
+                observed = {}
+                blockers: list[str] = []
+                conditional_fields = 0
+                passes = 0
+                handoff_attempted = False
+                max_passes = max(1, int(self.browser_config.max_fill_passes))
+                while passes < max_passes:
+                    passes += 1
+                    if inspection.blockers and not handoff_attempted:
+                        handoff_attempted = True
+                        if session.manual_user_handoff(inspection.blockers):
+                            inspection = adapter.inspect_form(session, passes)
+                    blockers.extend(inspection.blockers)
+                    all_fields, newly_seen = merge_observed_fields(observed, inspection.fields)
+                    if passes > 1:
+                        conditional_fields += newly_seen
+                    visible_fields = [item for item in all_fields if item.visible]
+                    resolve_answers(visible_fields, profile, bank, self.safe_fill_policy)
+                    signature = session.form_signature()
+                    uploaded_now = adapter.fill_safe_fields(
+                        session, visible_fields, resume if not resume_uploaded else None,
+                    )
+                    resume_uploaded = resume_uploaded or uploaded_now
+                    if passes >= max_passes or not session.wait_for_form_change(signature):
+                        break
+                    inspection = adapter.inspect_form(session, passes + 1)
+
+                fields = list(observed.values())
+                blockers = list(dict.fromkeys(blockers))
+                validation.extend(adapter.validate(session, fields))
+                resume_required = any(
+                    item.visible and item.required and item.field_type == "file"
+                    and re.search(r"\b(resume|cv)\b", item.raw_question, re.I)
+                    for item in fields
+                )
+                readiness = calculate_readiness(
+                    fields, blockers, validation,
+                    resume_required=resume_required, resume_uploaded=resume_uploaded,
+                )
+                if readiness.status == "NEEDS_USER_ACTION":
                     status = "NEEDS_USER_ACTION"
+                elif readiness.status == "READY_FOR_REVIEW":
+                    status = "FORM_READY_FOR_REVIEW"
+                elif readiness.status == "BLOCKED":
+                    status = "BLOCKED"
                 else:
-                    resolve_answers(inspection.fields, profile, bank, self.safe_fill_policy)
-                    try:
-                        resume = self.resume_policy.validate()
-                    except ValueError as exc:
-                        validation.append(ValidationIssue("resume", "RESUME_POLICY_BLOCKED", str(exc), False))
-                    resume_uploaded = adapter.fill_safe_fields(session, inspection.fields, resume)
-                    validation.extend(adapter.validate(session, inspection.fields))
-                    unresolved_required = any(issue.required for issue in validation)
-                    status = "FORM_PARTIALLY_FILLED" if unresolved_required else "FORM_READY_FOR_REVIEW"
+                    status = "FORM_PARTIALLY_FILLED"
                 review_screenshots, html_path = adapter.capture_review(session)
                 screenshots.extend(review_screenshots)
                 report = DryRunReport(
                     application_id=application_id, company=job.get("company") or "",
                     role=job.get("title") or "", ats_provider=adapter.provider,
-                    url=inspection.url, fields=inspection.fields,
-                    authentication_blockers=inspection.blockers,
+                    url=inspection.url, fields=fields,
+                    authentication_blockers=blockers,
                     validation_issues=validation,
                     resume_uploaded=resume_uploaded,
-                    resume_path=str(resume.path) if resume_uploaded and resume else "",
+                    resume_identifier=resume.identifier if resume_uploaded and resume else "",
                     screenshot_paths=screenshots,
                     html_snapshot_path=html_path,
                     final_status=status, run_status="DRY_RUN_COMPLETE",
                     submission_requests_blocked=list(session.guard.blocked_requests),
+                    inspection_passes=passes,
+                    conditional_fields_detected=conditional_fields,
+                    readiness=readiness.to_dict(),
                 )
                 payload = self._write_report(session, report)
         except Exception as exc:
@@ -181,7 +224,7 @@ class BrowserApplicationService:
         update_browser_status(
             self.private_db_path, application_id, status,
             "safe browser dry run completed; final submission blocked by policy",
-            resume_path=report.resume_path,
+            resume_path=report.resume_identifier,
         )
         finish_form_run(self.private_db_path, run_id, payload)
         return report

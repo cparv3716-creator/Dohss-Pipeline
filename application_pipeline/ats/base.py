@@ -47,8 +47,8 @@ class ApplicationATSAdapter(ABC):
             pass
         return response
 
-    def inspect_form(self, session: Any) -> InspectionResult:
-        fields = inspect_page_fields(session.page)
+    def inspect_form(self, session: Any, pass_number: int = 1) -> InspectionResult:
+        fields = inspect_page_fields(session.page, pass_number)
         return InspectionResult(
             ats_provider=self.provider,
             url=session.page.url,
@@ -72,6 +72,23 @@ class ApplicationATSAdapter(ABC):
         value = field.proposed_value
         if field.field_type in ("text", "email", "phone", "textarea", "number", "date"):
             locator.first.fill(_string_value(value))
+        elif field.field_type == "select" and field.control_kind == "combobox":
+            locator.first.click()
+            page.wait_for_timeout(150)
+            options = frame.locator('[role="option"]:visible')
+            available = options.evaluate_all(
+                "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
+            )
+            field.options = list(available)
+            option = next((item for item in field.options if _matches(value, item)), None)
+            if not option:
+                page.keyboard.press("Escape")
+                raise ValueError("No custom dropdown option exactly matches the verified answer")
+            choices = options.filter(has_text=re.compile(rf"^\s*{re.escape(str(option['label']))}\s*$", re.I))
+            if choices.count() != 1:
+                page.keyboard.press("Escape")
+                raise ValueError("Custom dropdown answer is ambiguous")
+            choices.first.click()
         elif field.field_type == "select":
             option = next((item for item in field.options if _matches(value, item)), None)
             if not option:
@@ -101,14 +118,14 @@ class ApplicationATSAdapter(ABC):
                     field.answer_reason = "GENERIC_ATS_INSPECTION_ONLY"
             return False
         for field in fields:
-            if field.answer_status != AnswerStatus.PROPOSED.value:
+            if not field.visible or field.answer_status != AnswerStatus.PROPOSED.value:
                 continue
             try:
                 self._fill_field(session.page, field)
                 session.artifacts.log("field_filled", field_id=field.field_id, question_type=field.canonical_question_type)
             except Exception as exc:
                 field.answer_status = AnswerStatus.ERROR.value
-                field.answer_reason = f"{type(exc).__name__}: {exc}"
+                field.answer_reason = f"FIELD_FILL_FAILED:{type(exc).__name__}"
                 session.artifacts.log("field_fill_failed", field_id=field.field_id, error=field.answer_reason)
 
         resume_uploaded = False
@@ -122,23 +139,28 @@ class ApplicationATSAdapter(ABC):
                 try:
                     frame = self._frame(session.page, field)
                     frame.locator(field.selector).first.set_input_files(str(resume.path))
-                    field.current_value = resume.path.name
+                    acknowledgement = frame.locator(field.selector).first.evaluate(
+                        "el => el.files && el.files.length ? {count: el.files.length, name: el.files[0].name} : {count: 0, name: ''}"
+                    )
+                    if acknowledgement.get("count") != 1 or acknowledgement.get("name") != resume.path.name:
+                        raise ValueError("The application page did not acknowledge the configured resume")
+                    field.current_value = resume.identifier
                     field.answer_source = "configured_resume"
                     field.answer_verified = True
                     field.auto_fill_allowed = True
                     field.answer_status = AnswerStatus.UPLOADED.value
                     field.answer_reason = "CONFIGURED_PRIVATE_RESUME"
                     resume_uploaded = True
-                    session.artifacts.log("resume_uploaded", field_id=field.field_id, filename=resume.path.name)
+                    session.artifacts.log("resume_uploaded", field_id=field.field_id, resume_identifier=resume.identifier)
                 except Exception as exc:
                     field.answer_status = AnswerStatus.ERROR.value
-                    field.answer_reason = f"{type(exc).__name__}: {exc}"
+                    field.answer_reason = f"RESUME_UPLOAD_FAILED:{type(exc).__name__}"
         return resume_uploaded
 
     def validate(self, session: Any, fields: list[ApplicationField]) -> list[ValidationIssue]:
         issues: list[ValidationIssue] = []
         for field in fields:
-            if not field.required:
+            if not field.visible or not field.required:
                 continue
             is_present = field.answer_status in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value)
             if not is_present and field.current_value not in (None, "", False, []):

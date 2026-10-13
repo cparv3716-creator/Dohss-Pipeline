@@ -31,6 +31,8 @@ python main.py job 123
 python main.py inspect-application 1
 python main.py dry-run-application 1
 python main.py dry-run-application 1 --headed --manual-handoff
+python main.py candidate-audit
+python main.py review-application 1
 ```
 
 `prepare-applications` uses the existing discovery scrapers unless
@@ -60,6 +62,20 @@ fills answers only when their provenance is verified, automatic answering is
 allowed, classification confidence meets the threshold, and the central
 sensitivity policy permits the field. Greenhouse and Lever have dedicated
 adapters. Generic ATS pages are inspection-only.
+
+Dry runs use a bounded inspect/fill/reinspect loop so verified selections can
+reveal dependent fields without creating an unbounded automation loop. Native
+selects and exact-match ARIA combobox options are supported. An option is never
+selected when the verified value has no unique exact match.
+
+`candidate-audit` reports section completeness, counts, missing categories,
+resume-policy status, and risky permissions without printing candidate values.
+`review-application` renders field status and readiness without answer values.
+Job match and application readiness are deliberately separate scores.
+
+Screenshots mask editable controls. HTML snapshots and JSON reports redact
+entered values. Resume artifacts are represented in logs and reports by a
+content-derived identifier, never by their filename or filesystem path.
 
 In headed mode, `--manual-handoff` lets a person complete a legitimate login,
 MFA, OTP, or CAPTCHA and then resume inspection. The automation never attempts

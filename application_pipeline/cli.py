@@ -10,7 +10,7 @@ from database import db
 
 from .enrichment import JobDetailEnricher
 from .preparation import prepare_job, score_job
-from .private_db import get_assessment, list_applications
+from .private_db import get_application, get_assessment, get_form_runs, list_applications
 
 
 def settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -202,6 +202,8 @@ def _browser_service(config: dict[str, Any], args: list[str]):
         artifacts_root=str(browser.get("artifacts_root", "data/private/browser_runs")),
         manual_handoff=manual_handoff,
         save_html="--no-html" not in args and bool(browser.get("save_html", True)),
+        max_fill_passes=int(browser.get("max_fill_passes", 3)),
+        dom_settle_ms=int(browser.get("dom_settle_ms", 800)),
     )
     policy = SafeFillPolicy(
         minimum_confidence=int(browser.get("minimum_confidence", 85)),
@@ -241,7 +243,77 @@ def display_browser_report(report: Any) -> str:
             f"Resume uploaded: {'yes' if payload['resume_uploaded'] else 'no'}",
             f"Authentication blockers: {', '.join(payload['authentication_blockers']) if payload['authentication_blockers'] else 'none'}",
             f"Status: {payload['final_status']}",
+            f"Readiness: {payload.get('readiness', {}).get('score', 0)}% ({payload.get('readiness', {}).get('status', 'UNKNOWN')})",
             "Submission: BLOCKED BY POLICY",
             f"Private report: {payload['report_path']}",
         ]
     )
+
+
+def candidate_audit(config: dict[str, Any]) -> str:
+    from application_pipeline.browser.safety import ResumePolicy
+    from application_pipeline.candidate_audit import audit_candidate, format_candidate_audit
+
+    profile, bank, cfg = _load_private_inputs(config)
+    browser = cfg["browser"]
+    resume = ResumePolicy(
+        configured_path=str(browser.get("resume_path", "")),
+        allowed_roots=browser.get("allowed_resume_roots", ["data/private/resumes"]),
+    )
+    return format_candidate_audit(audit_candidate(
+        profile, bank, resume,
+        set(browser.get("allowed_sensitive_question_types", []) or []),
+    ))
+
+
+def review_application(config: dict[str, Any], application_id: int) -> str:
+    cfg = settings(config)
+    application = get_application(cfg["private_db_path"], application_id)
+    if not application:
+        raise KeyError(f"Application {application_id} not found")
+    job = db.get_job(config.get("database", {}).get("path", "data/pipeline.db"), application["job_id"])
+    runs = get_form_runs(cfg["private_db_path"], application_id)
+    if not runs:
+        raise ValueError("No browser inspection or dry run is available for this application")
+    run = runs[0]
+    payload = {}
+    report_path = Path(str(run.get("report_path") or ""))
+    if report_path.is_file():
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+    fields = payload.get("fields") or json_list(run.get("fields_json"))
+    readiness = payload.get("readiness") or {}
+    resolved = {"FILLED", "UPLOADED"}
+    lines = [
+        "Application:",
+        f"{(job or {}).get('title', 'Unknown role')} — {(job or {}).get('company', 'Unknown company')}",
+        f"ATS: {application.get('ats_provider') or 'Unknown'}",
+        f"Match: {application.get('match_score') if application.get('match_score') is not None else 'unknown'}/100",
+        "",
+        "Fields:",
+    ]
+    for item in fields:
+        if not item.get("visible", True):
+            continue
+        status = str(item.get("answer_status") or "UNRESOLVED")
+        label = str(item.get("label") or item.get("raw_question") or "Unlabelled field")
+        source = str(item.get("answer_source") or "").replace("profile.", "verified profile: ")
+        if status in resolved:
+            lines.append(f"[OK] {label} — {source or 'verified/configured'}")
+        elif status == "SKIPPED_SENSITIVE":
+            lines.append(f"[!] {label} — sensitive/manual only")
+        elif str(item.get("canonical_question_type")) in {"WHY_COMPANY", "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE"}:
+            lines.append(f"[!] {label} — prepared text requires review")
+        else:
+            lines.append(f"[!] {label} — unanswered")
+    required = [item for item in fields if item.get("visible", True) and item.get("required")]
+    safe = [item for item in fields if item.get("visible", True) and item.get("answer_status") in resolved]
+    lines.extend([
+        "",
+        f"Required fields: {len(required)}",
+        f"Safely resolved: {len(safe)}",
+        f"Manual review: {len([item for item in fields if item.get('visible', True)]) - len(safe)}",
+        f"Application readiness: {readiness.get('score', 0)}%",
+        f"Submission readiness: {readiness.get('status', 'NEEDS_INFORMATION')}",
+        "Submission: BLOCKED BY POLICY",
+    ])
+    return "\n".join(lines)

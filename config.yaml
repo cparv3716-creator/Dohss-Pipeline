@@ -186,6 +186,8 @@ applications:
     artifacts_root: data/private/browser_runs
     manual_handoff: false
     save_html: true
+    max_fill_passes: 3
+    dom_settle_ms: 800
     minimum_confidence: 85
     allowed_sensitivities: [public, private, personal]
     allowed_sensitive_question_types: []

@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import re
 import subprocess
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
 
 from candidate.answer_bank import AnswerEntry
 
 
 SENSITIVE_TYPES = {
     "CURRENT_CTC", "EXPECTED_CTC", "VISA_SPONSORSHIP", "RELOCATION",
+    "PRONOUNS", "DEMOGRAPHIC_SELF_ID", "CONSENT",
 }
+FREE_TEXT_TYPES = {"WHY_COMPANY", "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE", "OTHER"}
 SENSITIVE_PATTERNS = (
     r"criminal|conviction|background check",
     r"disab|self[- ]identif|veteran|race|ethnicity|gender|sexual orientation|demographic",
@@ -21,7 +25,12 @@ SENSITIVE_PATTERNS = (
     r"consent|privacy notice|terms and conditions|arbitration|non[- ]disclosure",
 )
 SUBMIT_TEXT = re.compile(r"\b(submit application|submit|final apply|send application|complete application)\b", re.I)
-SUBMISSION_URL = re.compile(r"(?:/applications?(?:/|$)|/submit(?:/|$)|/candidate/apply(?:/|$))", re.I)
+FINAL_SUBMISSION_PATH = re.compile(r"(?:/applications?(?:/|$)|/submit(?:/|$)|/apply(?:/|$)|/candidate/apply(?:/|$))", re.I)
+BENIGN_MUTATION_PATH = re.compile(
+    r"(?:/uploads?(?:/|$)|/attachments?(?:/|$)|/presign(?:ed)?(?:/|$)|"
+    r"/autocomplete(?:/|$)|/options?(?:/|$)|/search(?:/|$)|/validate(?:/|$)|/metadata(?:/|$))",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +47,8 @@ class SafeFillPolicy:
 
     def evaluate(self, question: str, question_type: str, answer: Optional[AnswerEntry], field_sensitivity: str = "private") -> FillDecision:
         lower_question = str(question or "").lower()
+        if question_type in FREE_TEXT_TYPES:
+            return FillDecision(False, "FREE_TEXT_REVIEW_REQUIRED")
         if question_type in SENSITIVE_TYPES and question_type not in self.allowed_sensitive_types:
             return FillDecision(False, "SENSITIVE_QUESTION_BLOCKED")
         if any(re.search(pattern, lower_question, re.I) for pattern in SENSITIVE_PATTERNS):
@@ -60,6 +71,7 @@ class SafeFillPolicy:
 @dataclass(frozen=True)
 class ResumeArtifact:
     path: Path
+    identifier: str
 
 
 class ResumePolicy:
@@ -87,7 +99,14 @@ class ResumePolicy:
             ignored = False
         if not ignored:
             raise ValueError("Configured resume is not protected by .gitignore")
-        return ResumeArtifact(path)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        return ResumeArtifact(path, f"resume:sha256:{digest}{path.suffix.lower()}")
+
+
+@dataclass(frozen=True)
+class RequestSafetyDecision:
+    blocked: bool
+    category: str
 
 
 class SubmissionGuard:
@@ -121,21 +140,46 @@ class SubmissionGuard:
         self.blocked_requests: list[str] = []
 
     @staticmethod
-    def is_submission_request(method: str, url: str, post_data: str = "") -> bool:
+    def classify_request(method: str, url: str, post_data: str = "") -> RequestSafetyDecision:
         if str(method).upper() not in {"POST", "PUT", "PATCH"}:
-            return False
-        if SUBMISSION_URL.search(str(url)):
-            return True
+            return RequestSafetyDecision(False, "READ_ONLY")
+        parsed = urlparse(str(url))
+        path = parsed.path.lower()
         payload = str(post_data or "").lower()
-        return any(marker in payload for marker in ('"submit"', "submit_application", "candidate_application"))
+        if any(marker in payload for marker in (
+            '"submit"', "submit_application", "submitapplication",
+            "candidate_application", "create_application", "apply_to_job",
+        )):
+            return RequestSafetyDecision(True, "EXPLICIT_SUBMISSION_PAYLOAD")
+        if BENIGN_MUTATION_PATH.search(path):
+            return RequestSafetyDecision(False, "BENIGN_FORM_SUPPORT")
+        host = parsed.hostname or ""
+        if "greenhouse.io" in host and (
+            re.search(r"/jobs/\d+(?:/|$)", path)
+            or re.search(r"/v\d+/boards/[^/]+/jobs/\d+(?:/|$)", path)
+        ):
+            return RequestSafetyDecision(True, "GREENHOUSE_FINAL_APPLICATION")
+        if "lever.co" in host and (
+            re.search(r"/v\d+/postings/[^/]+(?:/|$)", path)
+            or re.search(r"/[^/]+/[^/]+/apply(?:/|$)", path)
+        ):
+            return RequestSafetyDecision(True, "LEVER_FINAL_APPLICATION")
+        if FINAL_SUBMISSION_PATH.search(path):
+            return RequestSafetyDecision(True, "FINAL_SUBMISSION_PATH")
+        return RequestSafetyDecision(False, "NON_SUBMISSION_MUTATION")
+
+    @staticmethod
+    def is_submission_request(method: str, url: str, post_data: str = "") -> bool:
+        return SubmissionGuard.classify_request(method, url, post_data).blocked
 
     def install(self, context: Any) -> None:
         context.add_init_script(self.INIT_SCRIPT)
 
         def route_handler(route: Any) -> None:
             request = route.request
-            if self.is_submission_request(request.method, request.url, request.post_data or ""):
-                self.blocked_requests.append(request.url)
+            decision = self.classify_request(request.method, request.url, request.post_data or "")
+            if decision.blocked:
+                self.blocked_requests.append(f"{decision.category}:{request.url}")
                 route.abort("blockedbyclient")
             else:
                 route.continue_()

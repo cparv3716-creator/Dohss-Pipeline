@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from application_pipeline.browser.models import AnswerStatus, ApplicationField, InspectionResult, ValidationIssue
 from application_pipeline.browser.service import BrowserApplicationService
 from application_pipeline.browser.session import BrowserConfig
+from application_pipeline.cli import review_application
 from application_pipeline.private_db import get_application, get_form_runs, upsert_application
 from candidate import AnswerBank, CandidateProfile
 from database import db
@@ -43,6 +44,10 @@ class FakeSession:
         return str(path)
     def manual_user_handoff(self, _reasons):
         return False
+    def form_signature(self):
+        return "stable"
+    def wait_for_form_change(self, _signature):
+        return False
 
 
 class FakeAdapter:
@@ -50,7 +55,7 @@ class FakeAdapter:
     blockers = []
     def open_application(self, session, url):
         session.page.url = url
-    def inspect_form(self, session):
+    def inspect_form(self, session, pass_number=1):
         return InspectionResult(
             "Greenhouse", session.page.url,
             [ApplicationField("email", "Email", "Email", "email", True, canonical_question_type="EMAIL", confidence=90, selector="#email")],
@@ -71,6 +76,22 @@ class FakeAdapter:
 class FailingAdapter(FakeAdapter):
     def open_application(self, _session, _url):
         raise RuntimeError("synthetic navigation failure")
+
+
+class HandoffSession(FakeSession):
+    handoff_calls = 0
+    def manual_user_handoff(self, _reasons):
+        type(self).handoff_calls += 1
+        return True
+
+
+class HandoffAdapter(FakeAdapter):
+    inspections = 0
+    def inspect_form(self, session, pass_number=1):
+        type(self).inspections += 1
+        result = super().inspect_form(session, pass_number)
+        result.blockers = ["CAPTCHA_REQUIRED"] if type(self).inspections == 1 else []
+        return result
 
 
 class BrowserServiceTests(unittest.TestCase):
@@ -106,8 +127,15 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(report.submission, "FINAL_SUBMIT_BLOCKED_BY_POLICY")
             self.assertEqual(get_application(private_db, app["id"])["status"], "FORM_READY_FOR_REVIEW")
             self.assertEqual(get_form_runs(private_db, app["id"])[0]["status"], "DRY_RUN_COMPLETE")
+            rendered = review_application({
+                "database": {"path": str(public_db)},
+                "applications": {"private_db_path": str(private_db)},
+            }, app["id"])
+            self.assertIn("Application readiness:", rendered)
+            self.assertIn("Submission: BLOCKED BY POLICY", rendered)
+            self.assertNotIn("candidate@example.test", rendered)
 
-    def test_captcha_transitions_to_needs_user_action_without_fill(self):
+    def test_captcha_transitions_to_needs_user_action_after_safe_prefill(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             public_db, private_db, app = self._setup(root)
@@ -123,7 +151,7 @@ class BrowserServiceTests(unittest.TestCase):
             report = service.dry_run(app["id"], profile, bank)
             self.assertEqual(report.final_status, "NEEDS_USER_ACTION")
             self.assertEqual(report.authentication_blockers, ["CAPTCHA_REQUIRED"])
-            self.assertEqual(report.fields[0].answer_status, AnswerStatus.UNRESOLVED.value)
+            self.assertEqual(report.fields[0].answer_status, AnswerStatus.SKIPPED_UNKNOWN.value)
 
     def test_browser_failure_closes_run_and_blocks_application(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,6 +169,25 @@ class BrowserServiceTests(unittest.TestCase):
             run = get_form_runs(private_db, app["id"])[0]
             self.assertEqual(run["status"], "FAILED")
             self.assertIn("BROWSER_OPERATION_FAILED", run["validation_json"])
+
+    def test_manual_captcha_handoff_reuses_session_and_resumes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            public_db, private_db, app = self._setup(root)
+            profile = CandidateProfile.load(write_profile(root / "profile.yaml"))
+            bank = AnswerBank.load(write_answers(root / "answers.yaml", {"EMAIL": answer("candidate@example.test")}))
+            HandoffSession.root = root
+            HandoffSession.handoff_calls = 0
+            HandoffAdapter.inspections = 0
+            service = BrowserApplicationService(
+                str(public_db), str(private_db), BrowserConfig(artifacts_root=str(root), headless=False, manual_handoff=True),
+                session_factory=HandoffSession, adapter_factory=lambda *_args: HandoffAdapter(),
+            )
+            report = service.dry_run(app["id"], profile, bank)
+            self.assertEqual(HandoffSession.handoff_calls, 1)
+            self.assertEqual(HandoffAdapter.inspections, 2)
+            self.assertEqual(report.authentication_blockers, [])
+            self.assertEqual(report.final_status, "FORM_READY_FOR_REVIEW")
 
 
 if __name__ == "__main__":

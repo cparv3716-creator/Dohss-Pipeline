@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import subprocess
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ class BrowserConfig:
     artifacts_root: str = "data/private/browser_runs"
     manual_handoff: bool = False
     save_html: bool = True
+    max_fill_passes: int = 3
+    dom_settle_ms: int = 800
 
 
 class BrowserArtifacts:
@@ -58,8 +61,15 @@ def sanitize_html_snapshot(content: str) -> str:
     soup = BeautifulSoup(content or "", "html.parser")
     for tag in soup.select("script, noscript"):
         tag.decompose()
-    for tag in soup.select('input[type="hidden"], input[type="password"]'):
-        tag["value"] = "[REDACTED]"
+    for tag in soup.select("input"):
+        if tag.has_attr("value"):
+            tag["value"] = "[REDACTED]"
+        tag.attrs.pop("checked", None)
+    for tag in soup.select("textarea"):
+        tag.clear()
+        tag.string = "[REDACTED]"
+    for tag in soup.select("option"):
+        tag.attrs.pop("selected", None)
     for tag in soup.find_all(True):
         for attribute in list(tag.attrs):
             if any(marker in attribute.lower() for marker in ("token", "secret", "csrf", "auth")):
@@ -116,9 +126,28 @@ class BrowserSession:
 
     def screenshot(self, name: str, full_page: bool = True) -> str:
         path = self.artifacts.path(name if name.endswith(".png") else f"{name}.png")
-        self.page.screenshot(path=str(path), full_page=full_page, animations="disabled")
+        masks = self.page.locator('input, textarea, select, [contenteditable="true"]')
+        self.page.screenshot(
+            path=str(path), full_page=full_page, animations="disabled",
+            mask=[masks], mask_color="#606060",
+        )
         self.artifacts.log("screenshot_saved", path=str(path))
         return str(path)
+
+    def form_signature(self) -> str:
+        structure = self.page.locator("input, textarea, select, [role=combobox]").evaluate_all(
+            "els => els.filter(e => { const s=getComputedStyle(e); const r=e.getBoundingClientRect(); "
+            "return s.display!=='none' && s.visibility!=='hidden' && r.width>0 && r.height>0; })"
+            ".map(e => [e.tagName,e.type||'',e.name||'',e.id||'',e.getAttribute('aria-label')||'',!!e.required])"
+        )
+        return hashlib.sha256(json.dumps(structure, sort_keys=True).encode("utf-8")).hexdigest()
+
+    def wait_for_form_change(self, previous_signature: str) -> bool:
+        self.page.wait_for_timeout(max(0, self.config.dom_settle_ms))
+        try:
+            return self.form_signature() != previous_signature
+        except Exception:
+            return False
 
     def html_snapshot(self, name: str = "page.html") -> str:
         if not self.config.save_html:

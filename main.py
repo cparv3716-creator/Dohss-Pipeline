@@ -1190,6 +1190,17 @@ def cmd_dry_run_application(config):
     print(display_browser_report(report))
 
 
+def cmd_candidate_audit(config):
+    from application_pipeline.cli import candidate_audit
+    print(candidate_audit(config))
+
+
+def cmd_review_application(config):
+    from application_pipeline.cli import review_application
+    application_id = _application_id_arg("review-application")
+    print(review_application(config, application_id))
+
+
 COMMANDS = {
     "run": cmd_run, "fetch-now": cmd_fetch_now, "dashboard": cmd_dashboard,
     "add-hr": cmd_add_hr, "enrich-contacts": cmd_enrich_contacts,
@@ -1219,6 +1230,8 @@ COMMANDS = {
     "job": cmd_job,
     "inspect-application": cmd_inspect_application,
     "dry-run-application": cmd_dry_run_application,
+    "candidate-audit": cmd_candidate_audit,
+    "review-application": cmd_review_application,
     # DoHSS target company + HR commands
     "discover-target-companies": cmd_discover_target_companies,
     "target-company-status": cmd_target_company_status,
@@ -1285,6 +1298,10 @@ DoHSS Placement Intelligence Pipeline
                               Inspect and store a normalized form without filling
   python main.py dry-run-application <application_id> [--headed] [--manual-handoff]
                               Fill only policy-approved fields and stop before submit
+  python main.py candidate-audit
+                              Show profile completeness without printing private values
+  python main.py review-application <application_id>
+                              Show a privacy-safe field-level readiness review
 
 --- Companies ---
   python main.py import-company-seeds companies.csv

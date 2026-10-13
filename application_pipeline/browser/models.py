@@ -59,12 +59,20 @@ class ApplicationField:
     answer_reason: str = ""
     selector: str = ""
     frame_url: str = ""
+    control_kind: str = "native"
+    detected_pass: int = 1
+    visible: bool = True
     proposed_value: Any = field(default=None, repr=False)
 
     def to_dict(self, include_proposed_value: bool = False) -> dict[str, Any]:
         data = asdict(self)
         if not include_proposed_value:
             data.pop("proposed_value", None)
+        if data.get("current_value") not in (None, "", False, []):
+            data["current_value"] = "[REDACTED]"
+        source = str(data.get("answer_source") or "")
+        if source and not source.startswith("profile.") and source != "configured_resume":
+            data["answer_source"] = "verified_answer_bank"
         return data
 
 
@@ -84,6 +92,7 @@ class InspectionResult:
     blockers: list[str] = field(default_factory=list)
     final_submit_controls: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    required_controls_seen: int = 0
 
 
 @dataclass
@@ -97,7 +106,7 @@ class DryRunReport:
     authentication_blockers: list[str] = field(default_factory=list)
     validation_issues: list[ValidationIssue] = field(default_factory=list)
     resume_uploaded: bool = False
-    resume_path: str = ""
+    resume_identifier: str = ""
     screenshot_paths: list[str] = field(default_factory=list)
     html_snapshot_path: str = ""
     final_status: str = "FORM_INSPECTED"
@@ -105,6 +114,9 @@ class DryRunReport:
     submission: str = "FINAL_SUBMIT_BLOCKED_BY_POLICY"
     submission_requests_blocked: list[str] = field(default_factory=list)
     report_path: str = ""
+    inspection_passes: int = 1
+    conditional_fields_detected: int = 0
+    readiness: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         fields = [item.to_dict() for item in self.fields]
@@ -117,13 +129,13 @@ class DryRunReport:
             "fields_detected": len(fields),
             "answers_filled": sum(item["answer_status"] == AnswerStatus.FILLED.value for item in fields),
             "answers_skipped": sum(item["answer_status"].startswith("SKIPPED") for item in fields),
-            "missing_answers": [item["raw_question"] for item in fields if item["required"] and item["answer_status"] not in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value)],
-            "sensitive_questions": [item["raw_question"] for item in fields if item["answer_status"] == AnswerStatus.SKIPPED_SENSITIVE.value],
+            "missing_answers": [item["raw_question"] for item in fields if item["visible"] and item["required"] and item["answer_status"] not in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value)],
+            "sensitive_questions": [item["raw_question"] for item in fields if item["visible"] and item["answer_status"] == AnswerStatus.SKIPPED_SENSITIVE.value],
             "fields": fields,
             "authentication_blockers": self.authentication_blockers,
             "validation_issues": [asdict(item) for item in self.validation_issues],
             "resume_uploaded": self.resume_uploaded,
-            "resume_path": self.resume_path,
+            "resume_identifier": self.resume_identifier,
             "screenshot_paths": self.screenshot_paths,
             "html_snapshot_path": self.html_snapshot_path,
             "final_status": self.final_status,
@@ -131,4 +143,7 @@ class DryRunReport:
             "submission": self.submission,
             "submission_requests_blocked": self.submission_requests_blocked,
             "report_path": self.report_path,
+            "inspection_passes": self.inspection_passes,
+            "conditional_fields_detected": self.conditional_fields_detected,
+            "readiness": self.readiness,
         }

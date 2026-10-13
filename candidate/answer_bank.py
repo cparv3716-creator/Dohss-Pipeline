@@ -17,12 +17,15 @@ CANONICAL_QUESTION_TYPES = (
     "WORK_AUTHORIZATION", "VISA_SPONSORSHIP", "RELOCATION",
     "YEARS_OF_EXPERIENCE", "SKILL_EXPERIENCE", "AVAILABILITY", "WHY_COMPANY",
     "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE", "OTHER",
+    "COUNTRY", "STATE_PROVINCE", "POSTAL_CODE", "CURRENT_COMPANY",
+    "CURRENT_TITLE", "PREFERRED_NAME", "PRONOUNS", "DEMOGRAPHIC_SELF_ID", "CONSENT",
 )
 
 PROFILE_FALLBACKS = {
     "FULL_NAME": "full_name", "EMAIL": "email", "PHONE": "phone",
     "CURRENT_CITY": "city", "LINKEDIN": "linkedin", "GITHUB": "github",
-    "PORTFOLIO": "portfolio", "DEGREE": "degrees", "UNIVERSITY": "institutions",
+    "PORTFOLIO": "portfolio", "HIGHEST_EDUCATION": "education",
+    "DEGREE": "degrees", "UNIVERSITY": "institutions",
     "GRADUATION_YEAR": "graduation_dates", "CGPA": "cgpa",
     "NOTICE_PERIOD": "notice_period", "WORK_AUTHORIZATION": "work_authorization",
     "VISA_SPONSORSHIP": "visa_sponsorship_requirements",

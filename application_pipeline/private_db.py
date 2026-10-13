@@ -100,6 +100,10 @@ def init_private_db(path: str | Path) -> None:
                 report_path TEXT,
                 resume_path TEXT,
                 submission_guard_events TEXT NOT NULL DEFAULT '[]',
+                readiness_score INTEGER,
+                readiness_status TEXT,
+                inspection_passes INTEGER NOT NULL DEFAULT 1,
+                conditional_fields_detected INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -113,6 +117,17 @@ def init_private_db(path: str | Path) -> None:
             BEGIN SELECT RAISE(ABORT, 'submission fields are disabled in the preparation milestone'); END;
             """
         )
+        form_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(application_form_runs)")
+        }
+        for name, definition in (
+            ("readiness_score", "INTEGER"),
+            ("readiness_status", "TEXT"),
+            ("inspection_passes", "INTEGER NOT NULL DEFAULT 1"),
+            ("conditional_fields_detected", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if name not in form_columns:
+                conn.execute(f"ALTER TABLE application_form_runs ADD COLUMN {name} {definition}")
         conn.commit()
     finally:
         conn.close()
@@ -288,7 +303,8 @@ def finish_form_run(path: str | Path, run_id: int, report: Mapping[str, Any]) ->
             UPDATE application_form_runs SET
               status=?, fields_json=?, blockers_json=?, validation_json=?,
               screenshot_paths=?, html_snapshot_path=?, report_path=?, resume_path=?,
-              submission_guard_events=?, updated_at=?
+              submission_guard_events=?, readiness_score=?, readiness_status=?,
+              inspection_passes=?, conditional_fields_detected=?, updated_at=?
             WHERE id=?
             """,
             (
@@ -299,8 +315,12 @@ def finish_form_run(path: str | Path, run_id: int, report: Mapping[str, Any]) ->
                 _json(report.get("screenshot_paths", [])),
                 report.get("html_snapshot_path", ""),
                 report.get("report_path", ""),
-                report.get("resume_path", ""),
+                report.get("resume_identifier", report.get("resume_path", "")),
                 _json(report.get("submission_requests_blocked", [])),
+                (report.get("readiness") or {}).get("score"),
+                (report.get("readiness") or {}).get("status"),
+                int(report.get("inspection_passes", 1)),
+                int(report.get("conditional_fields_detected", 0)),
                 _now(), int(run_id),
             ),
         )

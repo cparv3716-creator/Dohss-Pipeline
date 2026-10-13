@@ -1,0 +1,27 @@
+<!doctype html>
+<html><body>
+<form id="application-form">
+  <label for="email">Email *</label><input id="email" name="email" type="email" required>
+  <label for="country">Country *</label>
+  <input id="country" name="country" role="combobox" aria-haspopup="listbox" aria-controls="country-options" required>
+  <div id="country-options" role="listbox" style="display:none">
+    <div role="option" data-value="India">India</div>
+    <div role="option" data-value="Canada">Canada</div>
+  </div>
+  <div id="conditional"></div>
+  <label for="resume">Resume *</label><input id="resume" name="resume" type="file" required>
+  <button type="submit">Submit Application</button>
+</form>
+<script>
+const country = document.getElementById('country');
+const options = document.getElementById('country-options');
+country.addEventListener('click', () => options.style.display = 'block');
+document.querySelectorAll('[role=option]').forEach(option => option.addEventListener('click', () => {
+  country.value = option.dataset.value;
+  options.style.display = 'none';
+  if (option.dataset.value === 'India') {
+    document.getElementById('conditional').innerHTML = '<label for="state">State *</label><select id="state" name="state" required><option value="">Select</option><option value="Tamil Nadu">Tamil Nadu</option><option value="Karnataka">Karnataka</option></select>';
+  }
+}));
+</script>
+</body></html>
