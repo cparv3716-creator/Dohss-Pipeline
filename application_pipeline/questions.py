@@ -46,7 +46,7 @@ PATTERNS = (
     ("VISA_SPONSORSHIP", r"\b(visa|sponsor(ship)?)\b"),
     ("RELOCATION", r"\b(relocat(e|ion)|move to)\b"),
     ("NOTICE_PERIOD", r"\b(notice period|how soon can you join)\b"),
-    ("AVAILABILITY", r"\b(available|availability|start date|when can you (start|join))\b"),
+    ("AVAILABILITY", r"\b(available|availability|earliest start date|available to start|when can you (start|join))\b"),
     ("WHY_COMPANY", r"\bwhy (this|our|the) company\b|\bwhy .*company\b"),
     ("WHY_ROLE", r"\bwhy (this|the) role\b|\bwhy .*position\b"),
     ("PROJECT_EXAMPLE", r"\b(project|built|developed)\b.*\b(example|describe|tell)\b|\bdescribe .*project\b"),
@@ -81,7 +81,32 @@ def _skill_from_experience_question(text: str) -> str:
 def classify_question(question: str) -> ClassifiedQuestion:
     text = " ".join(str(question or "").split())
     lower = text.lower()
-    if "year" in lower and any(word in lower for word in ("experience", "worked", "working", "using")):
+    # Resolve high-risk ambiguities before the general pattern table. A
+    # preferred name is not equivalent to a verified legal/first name, and
+    # country words inside authorization questions must not turn them into a
+    # plain COUNTRY field.
+    if re.search(r"\bpreferred (?:first )?name\b|\bname you go by\b", lower):
+        return ClassifiedQuestion("PREFERRED_NAME", 95)
+    if re.search(r"\b(?:lawfully|legally)?\s*authori[sz]ed to work\b|\bwork authori[sz]ation\b|\blegally work\b", lower):
+        return ClassifiedQuestion("WORK_AUTHORIZATION", 95)
+    if re.search(r"\b(?:visa|sponsor(?:ship|ed|ing)?)\b", lower):
+        return ClassifiedQuestion("VISA_SPONSORSHIP", 95)
+    if re.search(r"\b(?:salary|compensation|ctc) expectations?\b|\bdesired (?:salary|compensation|ctc)\b", lower):
+        return ClassifiedQuestion("EXPECTED_CTC", 95)
+    if re.search(r"\blocation\s*\(\s*city\s*\)|\bcity of residence\b", lower):
+        return ClassifiedQuestion("CURRENT_CITY", 95)
+    if re.fullmatch(r"(?:education\s+)?school", lower):
+        return ClassifiedQuestion("UNIVERSITY", 95)
+    if re.fullmatch(r"end date year", lower):
+        return ClassifiedQuestion("GRADUATION_YEAR", 95)
+    if re.fullmatch(r"(?:start date (?:month|year)|end date month)", lower):
+        return ClassifiedQuestion("OTHER", 20, free_text=False)
+    explicit_duration = bool(re.search(
+        r"\bhow many\s+years?\b|\byears?\s+of\s+.+?\s+experience\b|"
+        r"\byears?\s+of\s+experience\s+(?:do you have\s+)?(?:with|using|in)\b",
+        lower,
+    ))
+    if explicit_duration:
         skill = _skill_from_experience_question(text)
         if not skill or skill.lower() in ("experience", "work experience"):
             return ClassifiedQuestion("YEARS_OF_EXPERIENCE", 85)

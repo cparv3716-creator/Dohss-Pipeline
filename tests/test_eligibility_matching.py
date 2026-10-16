@@ -26,17 +26,24 @@ class EligibilityAndMatchingTests(unittest.TestCase):
             self.assertEqual(result.status, UNKNOWN_REVIEW)
             self.assertIn("EXPERIENCE_UNKNOWN", [reason["code"] for reason in result.reasons])
 
-    def test_mandatory_missing_skill_is_ineligible(self):
+    def test_mandatory_missing_skill_requires_review_without_negative_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = self._profile(tmp, skills=verified(["Python"]))
             result = evaluate_eligibility(profile, {"required_skills": ["Python", "SQL"]})
-            self.assertEqual(result.status, INELIGIBLE)
+            self.assertEqual(result.status, UNKNOWN_REVIEW)
+            self.assertIn("MANDATORY_SKILLS_UNVERIFIED", [reason["code"] for reason in result.reasons])
 
     def test_candidate_exclusion_has_priority(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = self._profile(tmp, application_preferences=verified({"excluded_companies": ["Example Corp"]}))
             result = evaluate_eligibility(profile, {"company": "Example Corp"})
             self.assertEqual(result.status, INELIGIBLE)
+
+    def test_both_employment_preference_is_not_an_exclusion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._profile(tmp, employment_type=verified("both"))
+            result = evaluate_eligibility(profile, {"employment_type": "Full-time"})
+            self.assertEqual(result.status, ELIGIBLE)
 
     def test_work_authorization_by_country(self):
         with tempfile.TemporaryDirectory() as tmp:

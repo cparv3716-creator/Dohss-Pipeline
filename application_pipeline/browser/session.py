@@ -70,6 +70,9 @@ def sanitize_html_snapshot(content: str) -> str:
         tag.string = "[REDACTED]"
     for tag in soup.select("option"):
         tag.attrs.pop("selected", None)
+    for tag in soup.select('[class*="single-value"], [class*="multi-value"], [role="option"][aria-selected="true"]'):
+        tag.clear()
+        tag.string = "[REDACTED]"
     for tag in soup.find_all(True):
         for attribute in list(tag.attrs):
             if any(marker in attribute.lower() for marker in ("token", "secret", "csrf", "auth")):
@@ -126,7 +129,10 @@ class BrowserSession:
 
     def screenshot(self, name: str, full_page: bool = True) -> str:
         path = self.artifacts.path(name if name.endswith(".png") else f"{name}.png")
-        masks = self.page.locator('input, textarea, select, [contenteditable="true"]')
+        masks = self.page.locator(
+            'input, textarea, select, [contenteditable="true"], [role="combobox"], '
+            '[class*="single-value"], [class*="multi-value"]'
+        )
         self.page.screenshot(
             path=str(path), full_page=full_page, animations="disabled",
             mask=[masks], mask_color="#606060",

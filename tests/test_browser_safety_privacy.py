@@ -30,12 +30,14 @@ class BrowserSafetyPrivacyTests(unittest.TestCase):
         self.assertEqual(payload["current_value"], "[REDACTED]")
         self.assertNotIn("private@example.test", str(payload))
         sanitized = sanitize_html_snapshot(
-            '<input value="private@example.test" checked><textarea>secret text</textarea><option selected>India</option>'
+            '<input value="private@example.test" checked><textarea>secret text</textarea>'
+            '<option selected>India</option><div class="select__single-value">Chennai</div>'
         )
         self.assertNotIn("private@example.test", sanitized)
         self.assertNotIn("secret text", sanitized)
         self.assertNotIn("checked", sanitized)
         self.assertNotIn("selected", sanitized)
+        self.assertNotIn("Chennai", sanitized)
 
 
 if __name__ == "__main__":

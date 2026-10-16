@@ -120,7 +120,11 @@ def evaluate_eligibility(profile: CandidateProfile, job: Mapping[str, Any]) -> E
             )
             missing = sorted(required_skills - candidate_skills)
             if missing:
-                fail("MANDATORY_SKILLS_MISSING", "Verified skill inventory is missing mandatory skills", missing=missing)
+                # A verified resume-derived inventory proves listed skills, but
+                # is not an explicit declaration that every omitted skill is
+                # absent. Keep omissions unknown unless negative evidence is
+                # represented in the profile.
+                unknown("MANDATORY_SKILLS_UNVERIFIED", "Mandatory skills are not present in verified candidate evidence", missing=missing)
             else:
                 passed("MANDATORY_SKILLS_MET", "All parsed mandatory skills are verified", matched=sorted(required_skills))
 
@@ -146,7 +150,8 @@ def evaluate_eligibility(profile: CandidateProfile, job: Mapping[str, Any]) -> E
     employment = str(job.get("employment_type") or "").lower()
     allowed_employment = _names(profile.verified_value("employment_type"))
     if employment and employment != "unknown" and profile.fact("employment_type").verified:
-        if allowed_employment and employment not in allowed_employment:
+        unrestricted = bool(allowed_employment & {"any", "all", "both", "no preference"})
+        if allowed_employment and not unrestricted and employment not in allowed_employment:
             fail("EMPLOYMENT_TYPE_EXCLUDED", "Job employment type is outside candidate preferences", job_type=employment)
         else:
             passed("EMPLOYMENT_TYPE_MET", "Employment type matches verified preferences")

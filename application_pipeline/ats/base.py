@@ -117,17 +117,10 @@ class ApplicationATSAdapter(ABC):
                     field.answer_status = AnswerStatus.SKIPPED_POLICY.value
                     field.answer_reason = "GENERIC_ATS_INSPECTION_ONLY"
             return False
-        for field in fields:
-            if not field.visible or field.answer_status != AnswerStatus.PROPOSED.value:
-                continue
-            try:
-                self._fill_field(session.page, field)
-                session.artifacts.log("field_filled", field_id=field.field_id, question_type=field.canonical_question_type)
-            except Exception as exc:
-                field.answer_status = AnswerStatus.ERROR.value
-                field.answer_reason = f"FIELD_FILL_FAILED:{type(exc).__name__}"
-                session.artifacts.log("field_fill_failed", field_id=field.field_id, error=field.answer_reason)
 
+        # Upload first. Modern ATS forms frequently re-render their React tree
+        # after select/text changes, which can replace the file input and make
+        # an otherwise valid resume selector stale.
         resume_uploaded = False
         if resume:
             resume_fields = [
@@ -139,10 +132,26 @@ class ApplicationATSAdapter(ABC):
                 try:
                     frame = self._frame(session.page, field)
                     frame.locator(field.selector).first.set_input_files(str(resume.path))
-                    acknowledgement = frame.locator(field.selector).first.evaluate(
-                        "el => el.files && el.files.length ? {count: el.files.length, name: el.files[0].name} : {count: 0, name: ''}"
-                    )
-                    if acknowledgement.get("count") != 1 or acknowledgement.get("name") != resume.path.name:
+                    try:
+                        acknowledgement = frame.locator(field.selector).first.evaluate(
+                            "el => el.files && el.files.length ? {count: el.files.length, name: el.files[0].name} : {count: 0, name: ''}",
+                            timeout=2_000,
+                        )
+                    except Exception:
+                        # Greenhouse replaces the native input after a
+                        # successful upload. The rendered filename is its
+                        # acknowledgement in that state.
+                        acknowledgement = {"count": 0, "name": ""}
+                    native_ack = acknowledgement.get("count") == 1 and acknowledgement.get("name") == resume.path.name
+                    if not native_ack:
+                        try:
+                            frame.get_by_text(resume.path.name, exact=False).first.wait_for(
+                                state="attached", timeout=5_000,
+                            )
+                        except Exception:
+                            pass
+                    rendered_name = resume.path.name in frame.content()
+                    if not native_ack and not rendered_name:
                         raise ValueError("The application page did not acknowledge the configured resume")
                     field.current_value = resume.identifier
                     field.answer_source = "configured_resume"
@@ -155,6 +164,18 @@ class ApplicationATSAdapter(ABC):
                 except Exception as exc:
                     field.answer_status = AnswerStatus.ERROR.value
                     field.answer_reason = f"RESUME_UPLOAD_FAILED:{type(exc).__name__}"
+
+        for field in fields:
+            if not field.visible or field.answer_status != AnswerStatus.PROPOSED.value:
+                continue
+            try:
+                self._fill_field(session.page, field)
+                session.artifacts.log("field_filled", field_id=field.field_id, question_type=field.canonical_question_type)
+            except Exception as exc:
+                field.answer_status = AnswerStatus.ERROR.value
+                field.answer_reason = f"FIELD_FILL_FAILED:{type(exc).__name__}"
+                session.artifacts.log("field_fill_failed", field_id=field.field_id, error=field.answer_reason)
+
         return resume_uploaded
 
     def validate(self, session: Any, fields: list[ApplicationField]) -> list[ValidationIssue]:

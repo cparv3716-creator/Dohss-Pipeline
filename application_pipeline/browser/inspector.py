@@ -26,7 +26,8 @@ els => els.filter(el => {
   const legend = fieldset?.querySelector('legend')?.innerText?.trim() || '';
   const nearby = el.closest('.field, .application-field, .form-group, [class*="field"]');
   const nearbyText = nearby?.querySelector('label')?.innerText?.trim() || '';
-  const label = labels[0] || el.getAttribute('aria-label') || nearbyText || legend || el.placeholder || el.name || el.id || `field_${index}`;
+  const uploadLabel = el.type === 'file' ? el.closest('.file-upload')?.querySelector('.upload-label, .label')?.innerText?.trim() || '' : '';
+  const label = uploadLabel || labels[0] || el.getAttribute('aria-label') || nearbyText || legend || el.placeholder || el.name || el.id || `field_${index}`;
   const ariaLabel = el.getAttribute('aria-label') || '';
   const selector = el.id ? `[id=${JSON.stringify(el.id)}]` : el.name ? `${el.tagName.toLowerCase()}[name=${JSON.stringify(el.name)}]` : ariaLabel ? `${el.tagName.toLowerCase()}[aria-label=${JSON.stringify(ariaLabel)}]` : `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
   const isCustomSelect = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox';

@@ -45,6 +45,23 @@ class AtsEnrichmentQuestionTests(unittest.TestCase):
         self.assertEqual(result.status, "FAILED")
         self.assertIn("TimeoutError", result.error)
 
+    def test_unicode_entry_level_range_keeps_zero_minimum(self):
+        page = """
+        <html><body><main>
+        <h2>What we're looking for</h2>
+        <p>0–2 years of experience. Recent graduates are encouraged to apply. SQL.</p>
+        </main></body></html>
+        """
+        parsed = parse_job_detail(page, "https://jobs.lever.co/acme/1")
+        self.assertEqual(parsed["required_experience_min"], 0)
+        self.assertEqual(parsed["required_experience_max"], 2)
+        self.assertIn("SQL", parsed["required_skills"])
+
+    def test_description_tools_are_not_promoted_to_mandatory_without_requirements(self):
+        page = "<html><body><main>Work with adjacent Python and SQL teams.</main></body></html>"
+        parsed = parse_job_detail(page, "https://example.test/job")
+        self.assertEqual(parsed["required_skills"], [])
+
     def test_question_classification(self):
         skill = classify_question("How many years have you worked with Python?")
         self.assertEqual(skill.question_type, "SKILL_EXPERIENCE")
@@ -53,6 +70,21 @@ class AtsEnrichmentQuestionTests(unittest.TestCase):
         self.assertIn(joining.question_type, ("NOTICE_PERIOD", "AVAILABILITY"))
         self.assertEqual(classify_question("What is your expected salary?").question_type, "EXPECTED_CTC")
         self.assertEqual(classify_question("What technical skills have you used?").question_type, "VERIFIED_SKILLS")
+        self.assertEqual(classify_question("Preferred First Name").question_type, "PREFERRED_NAME")
+        self.assertEqual(
+            classify_question("Are you lawfully authorized to work in the country where this job is located?").question_type,
+            "WORK_AUTHORIZATION",
+        )
+        self.assertEqual(
+            classify_question("Will you require sponsorship in this country?").question_type,
+            "VISA_SPONSORSHIP",
+        )
+        self.assertEqual(classify_question("What are your salary expectations?").question_type, "EXPECTED_CTC")
+        self.assertEqual(classify_question("Location (City)").question_type, "CURRENT_CITY")
+        self.assertEqual(classify_question("Have you worked here in the past 10 years?").question_type, "OTHER")
+        self.assertEqual(classify_question("School").question_type, "UNIVERSITY")
+        self.assertEqual(classify_question("End date year").question_type, "GRADUATION_YEAR")
+        self.assertEqual(classify_question("Start date year").question_type, "OTHER")
 
 
 if __name__ == "__main__":

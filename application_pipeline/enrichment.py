@@ -17,7 +17,13 @@ from .ats import detect_ats
 
 SECTION_NAMES = {
     "responsibilities": ("responsibilities", "what you will do", "the role", "key duties"),
-    "requirements": ("requirements", "required qualifications", "what you bring", "must have", "qualifications"),
+    "requirements": (
+        "requirements", "required qualifications", "what you bring", "must have", "qualifications",
+        "desired qualifications", "ideal qualifications", "who you are", "about you",
+        "what we're looking for", "what you’re looking for", "what will i need to thrive in this role?",
+        "the kind of builder we're looking for", "the kind of builder we’re looking for",
+        "experience needed", "required skills",
+    ),
     "preferred": ("preferred qualifications", "nice to have", "good to have", "preferred"),
 }
 SKILL_VOCABULARY = (
@@ -79,22 +85,35 @@ def _skills(text: str) -> list[str]:
     lower = text.lower()
     found = []
     for skill in SKILL_VOCABULARY:
-        if re.search(r"(?<![a-z0-9+#.])" + re.escape(skill) + r"(?![a-z0-9+#.])", lower):
+        if re.search(r"(?<![a-z0-9+#])" + re.escape(skill) + r"(?![a-z0-9+#])", lower):
             found.append(skill.title() if skill not in ("r", "sql", "aws", "gcp", "sas") else skill.upper())
     return found
 
 
 def _experience_range(text: str) -> tuple[Optional[float], Optional[float]]:
+    normalized = (
+        str(text or "")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u2212", "-")
+        .replace("â€“", "-")
+    )
     patterns = (
         r"(\d+(?:\.\d+)?)\s*(?:-|–|to)\s*(\d+(?:\.\d+)?)\s*(?:\+\s*)?years?",
         r"(?:at least|minimum|min\.?|requires?)\s*(\d+(?:\.\d+)?)\+?\s*years?",
         r"(\d+(?:\.\d+)?)\+\s*years?",
     )
     for index, pattern in enumerate(patterns):
-        match = re.search(pattern, text, flags=re.I)
+        match = re.search(pattern, normalized, flags=re.I)
         if match:
             minimum = float(match.group(1))
             maximum = float(match.group(2)) if index == 0 else None
+            if re.search(
+                r"\b(?:fresh|recent|new) graduates?\b|\bno (?:previous |prior )?professional experience (?:is )?required\b",
+                normalized,
+                flags=re.I,
+            ):
+                minimum = 0.0
             return minimum, maximum
     return None, None
 
@@ -133,7 +152,9 @@ def parse_job_detail(page_html: str, source_url: str) -> dict[str, Any]:
     responsibilities = _extract_section(description, SECTION_NAMES["responsibilities"])
     requirements = _extract_section(description, SECTION_NAMES["requirements"])
     preferred = _extract_section(description, SECTION_NAMES["preferred"])
-    required_skills = _skills(requirements or description)
+    # The rest of a posting mentions adjacent-team tools and optional skills;
+    # only an identified requirements section is safe for hard-rule matching.
+    required_skills = _skills(requirements) if requirements else []
     preferred_skills = [skill for skill in _skills(preferred) if skill not in required_skills]
     exp_min, exp_max = _experience_range(requirements or description)
     education_match = re.search(
