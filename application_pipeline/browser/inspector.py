@@ -180,7 +180,9 @@ def _sensitivity(question_type: str, question: str) -> str:
         return "highly_sensitive"
     if re.search(r"criminal|disab|veteran|race|ethnicity|gender|conflict|relative|consent|attest|signature", question, re.I):
         return "highly_sensitive"
-    if question_type in {"PHONE", "CURRENT_CITY", "CGPA", "RELOCATION"}:
+    if question_type in {"PHONE", "CURRENT_CITY"}:
+        return "personal"
+    if question_type in {"CGPA", "RELOCATION"}:
         return "sensitive"
     return "private"
 

@@ -99,6 +99,22 @@ class BrowserInspectorTests(unittest.TestCase):
             self.assertEqual(email.answer_source, "test")
             self.assertTrue(email.answer_verified)
 
+    def test_verified_personal_contact_field_uses_explicit_answer_permission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            profile = CandidateProfile.load(write_profile(root / "profile.yaml"))
+            bank = AnswerBank.load(write_answers(root / "answers.yaml", {
+                "CURRENT_CITY": answer("Example City", sensitivity="personal"),
+            }))
+            fields = normalize_fields([{
+                "id": "city", "name": "city", "tag": "input", "type": "text",
+                "label": "Current city", "selector": "#city", "visible": True,
+                "enabled": True, "required": True, "group_key": "city",
+            }])
+            resolve_answers(fields, profile, bank, SafeFillPolicy())
+            self.assertEqual(fields[0].sensitivity, "personal")
+            self.assertEqual(fields[0].answer_status, AnswerStatus.PROPOSED.value)
+
     def test_authentication_blockers(self):
         html = """
         <html><body><h1>Sign in</h1><input type=password>
