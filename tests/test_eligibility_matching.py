@@ -75,6 +75,15 @@ class EligibilityAndMatchingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MatchResult(50, "MAYBE", 90, [], [], "", [])
 
+    def test_role_family_variants_trigger_review_without_inventing_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            profile = self._profile(tmp, target_roles=verified(["Equity Researcher"]))
+            job = {"title": "Research Intern", "full_description": "Support research projects."}
+            eligibility = evaluate_eligibility(profile, job)
+            result = match_job(profile, job, eligibility)
+            self.assertEqual(result.recommendation, "REVIEW")
+            self.assertIn("Role overlaps verified target roles", result.strengths)
+
     def test_hard_failure_forces_skip_regardless_of_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = self._profile(tmp, skills=verified(["Python"]), years_of_experience=verified(0))

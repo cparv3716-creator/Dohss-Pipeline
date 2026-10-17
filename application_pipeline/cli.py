@@ -330,6 +330,10 @@ def review_application(config: dict[str, Any], application_id: int) -> str:
     required = [item for item in unique.values() if item.get("required")]
     safe = [item for item in fields if item.get("visible", True) and item.get("answer_status") in resolved]
     blockers = payload.get("authentication_blockers") or json_list(run.get("blockers_json"))
+    security_observations = (
+        payload.get("security_observations")
+        or json_list(run.get("security_observations_json"))
+    )
     reasons = readiness.get("reasons") or []
     lines.extend([
         "",
@@ -338,6 +342,7 @@ def review_application(config: dict[str, Any], application_id: int) -> str:
         f"Resume upload: {'complete' if payload.get('resume_uploaded') else 'not complete'}",
         f"Manual review: {len(unique) - len(safe)}",
         f"Authentication/CAPTCHA: {', '.join(blockers) if blockers else 'none'}",
+        f"Security observations: {', '.join(security_observations) if security_observations else 'none'}",
         f"Application readiness: {readiness.get('score', 0)}%",
         f"Submission readiness: {readiness.get('status', 'NEEDS_INFORMATION')}",
         f"Readiness blockers: {', '.join(reasons) if reasons else 'none'}",

@@ -94,6 +94,7 @@ def init_private_db(path: str | Path) -> None:
                 status TEXT NOT NULL,
                 fields_json TEXT NOT NULL DEFAULT '[]',
                 blockers_json TEXT NOT NULL DEFAULT '[]',
+                security_observations_json TEXT NOT NULL DEFAULT '[]',
                 validation_json TEXT NOT NULL DEFAULT '[]',
                 screenshot_paths TEXT NOT NULL DEFAULT '[]',
                 html_snapshot_path TEXT,
@@ -134,6 +135,7 @@ def init_private_db(path: str | Path) -> None:
             ("readiness_status", "TEXT"),
             ("inspection_passes", "INTEGER NOT NULL DEFAULT 1"),
             ("conditional_fields_detected", "INTEGER NOT NULL DEFAULT 0"),
+            ("security_observations_json", "TEXT NOT NULL DEFAULT '[]'"),
         ):
             if name not in form_columns:
                 conn.execute(f"ALTER TABLE application_form_runs ADD COLUMN {name} {definition}")
@@ -310,7 +312,7 @@ def finish_form_run(path: str | Path, run_id: int, report: Mapping[str, Any]) ->
         conn.execute(
             """
             UPDATE application_form_runs SET
-              status=?, fields_json=?, blockers_json=?, validation_json=?,
+              status=?, fields_json=?, blockers_json=?, security_observations_json=?, validation_json=?,
               screenshot_paths=?, html_snapshot_path=?, report_path=?, resume_path=?,
               submission_guard_events=?, readiness_score=?, readiness_status=?,
               inspection_passes=?, conditional_fields_detected=?, updated_at=?
@@ -320,6 +322,7 @@ def finish_form_run(path: str | Path, run_id: int, report: Mapping[str, Any]) ->
                 report.get("run_status", "DRY_RUN_COMPLETE"),
                 _json(report.get("fields", [])),
                 _json(report.get("authentication_blockers", [])),
+                _json(report.get("security_observations", [])),
                 _json(report.get("validation_issues", [])),
                 _json(report.get("screenshot_paths", [])),
                 report.get("html_snapshot_path", ""),

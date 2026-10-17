@@ -111,6 +111,7 @@ class DryRunReport:
     url: str
     fields: list[ApplicationField]
     authentication_blockers: list[str] = field(default_factory=list)
+    security_observations: list[str] = field(default_factory=list)
     validation_issues: list[ValidationIssue] = field(default_factory=list)
     resume_uploaded: bool = False
     resume_identifier: str = ""
@@ -150,6 +151,7 @@ class DryRunReport:
             "sensitive_questions": [item["raw_question"] for item in fields if item["visible"] and item["answer_status"] == AnswerStatus.SKIPPED_SENSITIVE.value],
             "fields": fields,
             "authentication_blockers": self.authentication_blockers,
+            "security_observations": self.security_observations,
             "validation_issues": [asdict(item) for item in self.validation_issues],
             "resume_uploaded": self.resume_uploaded,
             "resume_identifier": self.resume_identifier,

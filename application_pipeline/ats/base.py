@@ -6,7 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Optional
 
-from application_pipeline.browser.inspector import detect_page_blockers, inspect_page_fields
+from application_pipeline.browser.inspector import detect_page_security_state, inspect_page_fields
 from application_pipeline.browser.models import AnswerStatus, ApplicationField, InspectionResult, ValidationIssue
 from application_pipeline.browser.safety import ResumeArtifact
 
@@ -33,12 +33,12 @@ def _degree_level(value: Any) -> str:
 def _degree_kind(value: Any) -> str:
     text = _normal(value)
     kinds = (
-        ("masters_arts", r"\b(m\s*a|master(?:s)? of arts)\b"),
-        ("masters_science", r"\b(m\s*s|m\s*sc|master(?:s)? of science)\b"),
-        ("masters_business", r"\b(m\s*b\s*a|master(?:s)? of business administration)\b"),
-        ("bachelors_arts", r"\b(b\s*a|bachelor(?:s)? of arts)\b"),
-        ("bachelors_science", r"\b(b\s*s|b\s*sc|bachelor(?:s)? of science)\b"),
-        ("bachelors_technology", r"\b(b\s*tech|bachelor(?:s)? of technology)\b"),
+        ("masters_arts", r"\b(m\s*a\b|master(?:s)? of arts\b)"),
+        ("masters_science", r"\b(m\s*s\b|m\s*sc\b|master(?:s)? of science\b)"),
+        ("masters_business", r"\b(m\s*b\s*a\b|master(?:s)? of business administration\b)"),
+        ("bachelors_arts", r"\b(b\s*a\b|bachelor(?:s)? of arts\b)"),
+        ("bachelors_science", r"\b(b\s*s\b|b\s*sc\b|bachelor(?:s)? of science\b)"),
+        ("bachelors_technology", r"\b(b\s*tech\b|bachelor(?:s)? of technology\b)"),
     )
     return next((name for name, pattern in kinds if re.search(pattern, text)), "")
 
@@ -54,6 +54,16 @@ def _search_query(value: Any, question_type: str) -> str:
             "bachelors_technology": "Bachelor of Technology",
         }.get(_degree_kind(value), _string_value(value))
     return _string_value(value)
+
+
+def _fallback_search_query(value: Any, question_type: str) -> str:
+    if question_type in {"DEGREE", "HIGHEST_EDUCATION"}:
+        return {
+            "masters": "Master",
+            "bachelors": "Bachelor",
+            "doctorate": "Doctor",
+        }.get(_degree_level(value), "")
+    return ""
 
 
 def _string_value(value: Any) -> str:
@@ -74,7 +84,7 @@ def _matches(value: Any, option: dict[str, str], question_type: str = "") -> boo
     if desired in ("false", "no", "not authorized", "not willing"):
         aliases.update(("no", "false"))
     if question_type in {"NOTICE_PERIOD", "AVAILABILITY"} and desired == "immediate":
-        aliases.update(("immediately", "0 days", "zero days"))
+        aliases.update(("immediately", "immediately available", "available immediately", "0 days", "zero days"))
     option_values = {_normal(option.get("value") or ""), _normal(option.get("label") or "")}
     if option_values & aliases:
         return True
@@ -84,6 +94,11 @@ def _matches(value: Any, option: dict[str, str], question_type: str = "") -> boo
             or (item.startswith(desired + " ") and bool(re.fullmatch(r"[a-z0-9]{2,8}", item[len(desired):].strip())))
             for item in option_values
         )
+    if question_type == "CURRENT_CITY":
+        # Location widgets commonly render a verified city as
+        # "City, State, Country". Prefix matching is safe only because the
+        # caller still requires exactly one matching option.
+        return any(item == desired or item.startswith(desired + " ") for item in option_values)
     if question_type in {"DEGREE", "HIGHEST_EDUCATION"}:
         wanted_kind = _degree_kind(value)
         option_kinds = {kind for item in option_values if (kind := _degree_kind(item))}
@@ -97,7 +112,25 @@ def _matches(value: Any, option: dict[str, str], question_type: str = "") -> boo
 
 def _unique_option(value: Any, options: list[dict[str, str]], question_type: str) -> Optional[dict[str, str]]:
     matches = [item for item in options if _matches(value, item, question_type)]
-    return matches[0] if len(matches) == 1 else None
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1 and question_type in {"DEGREE", "HIGHEST_EDUCATION"}:
+        # Greenhouse often includes both a generic canonical degree and
+        # specialized degrees at the same level. Prefer only a canonical
+        # generic label when the verified specific degree is unavailable.
+        preferred = {
+            "masters": ("master s degree", "masters degree", "masters", "master degree", "master"),
+            "bachelors": ("bachelor s degree", "bachelors degree", "bachelors", "bachelor degree", "bachelor"),
+            "doctorate": ("doctorate", "doctoral degree", "ph d", "phd"),
+        }.get(_degree_level(value), ())
+        for label in preferred:
+            ranked = [
+                item for item in matches
+                if label in {_normal(item.get("label") or ""), _normal(item.get("value") or "")}
+            ]
+            if len(ranked) == 1:
+                return ranked[0]
+    return None
 
 
 class ApplicationATSAdapter(ABC):
@@ -118,11 +151,13 @@ class ApplicationATSAdapter(ABC):
 
     def inspect_form(self, session: Any, pass_number: int = 1) -> InspectionResult:
         fields = inspect_page_fields(session.page, pass_number)
+        blockers, warnings = detect_page_security_state(session.page)
         return InspectionResult(
             ats_provider=self.provider,
             url=session.page.url,
             fields=fields,
-            blockers=detect_page_blockers(session.page),
+            blockers=blockers,
+            warnings=warnings,
             final_submit_controls=session.guard.submit_control_texts(session.page),
         )
 
@@ -140,7 +175,17 @@ class ApplicationATSAdapter(ABC):
         locator = frame.locator(field.selector)
         value = field.proposed_value
         if field.field_type in ("text", "email", "phone", "textarea", "number", "date"):
-            locator.first.fill(_string_value(value))
+            expected = _string_value(value)
+            locator.first.fill(expected)
+            actual = locator.first.input_value()
+            if field.field_type == "phone":
+                expected_digits = re.sub(r"\D", "", expected)
+                actual_digits = re.sub(r"\D", "", actual)
+                acknowledged = bool(expected_digits) and actual_digits.endswith(expected_digits)
+            else:
+                acknowledged = actual == expected
+            if not acknowledged:
+                raise ValueError("The control did not acknowledge the filled value")
         elif field.field_type == "select" and field.control_kind == "combobox":
             locator.first.click()
             page.wait_for_timeout(250)
@@ -152,6 +197,26 @@ class ApplicationATSAdapter(ABC):
             available = options.evaluate_all(
                 "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
             )
+            if not available:
+                # Current Greenhouse React Select controls sometimes reserve
+                # input clicks for search focus and open only via their
+                # adjacent flyout button.
+                try:
+                    toggle = locator.first.locator(
+                        "xpath=ancestor::div[contains(@class,'select-shell')][1]"
+                        "//button[contains(@aria-label,'Toggle')]"
+                    )
+                    if toggle.count() == 1:
+                        toggle.click()
+                        try:
+                            options.first.wait_for(state="visible", timeout=2_000)
+                        except Exception:
+                            page.wait_for_timeout(300)
+                        available = options.evaluate_all(
+                            "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
+                        )
+                except Exception:
+                    pass
             if not _unique_option(value, list(available), field.canonical_question_type):
                 # Searchable React controls frequently render options only
                 # after receiving the exact verified value. Typing does not
@@ -167,6 +232,20 @@ class ApplicationATSAdapter(ABC):
                     )
                 except Exception:
                     pass
+            if not available:
+                fallback_query = _fallback_search_query(value, field.canonical_question_type)
+                if fallback_query:
+                    try:
+                        locator.first.fill(fallback_query)
+                        try:
+                            options.first.wait_for(state="visible", timeout=2_000)
+                        except Exception:
+                            page.wait_for_timeout(300)
+                        available = options.evaluate_all(
+                            "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
+                        )
+                    except Exception:
+                        pass
             field.options = list(available)
             option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
@@ -177,16 +256,39 @@ class ApplicationATSAdapter(ABC):
                 page.keyboard.press("Escape")
                 raise SemanticMatchError("Custom dropdown answer is ambiguous")
             choices.first.click()
+            selected_input = ""
+            selected_shell = ""
+            try:
+                selected_input = locator.first.input_value()
+            except Exception:
+                pass
+            try:
+                selected_shell = locator.first.locator(
+                    "xpath=ancestor::div[contains(@class,'select-shell')][1]"
+                ).inner_text()
+            except Exception:
+                pass
+            wanted_option = _normal(option.get("label") or option.get("value") or "")
+            if wanted_option not in {_normal(selected_input), _normal(selected_shell)} and wanted_option not in _normal(selected_shell):
+                raise ValueError("The custom dropdown did not acknowledge the selected option")
         elif field.field_type == "select":
             option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
                 raise SemanticMatchError("No unique dropdown option matches the verified answer")
             locator.first.select_option(value=option["value"])
+            selected = locator.first.evaluate(
+                "el => el.selectedOptions && el.selectedOptions.length ? "
+                "{value: el.selectedOptions[0].value, label: el.selectedOptions[0].text} : null"
+            )
+            if not selected or not _matches(value, selected, field.canonical_question_type):
+                raise ValueError("The native dropdown did not acknowledge the selected option")
         elif field.field_type == "radio":
             option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
                 raise SemanticMatchError("No unique radio option matches the verified answer")
             frame.locator(f'{field.selector}[value={json.dumps(option["value"])}]').first.check()
+            if not frame.locator(f'{field.selector}[value={json.dumps(option["value"])}]').first.is_checked():
+                raise ValueError("The radio group did not acknowledge the selected option")
         elif field.field_type == "checkbox":
             if field.control_kind == "checkbox_group" and len(field.options) > 1:
                 wanted = list(value) if isinstance(value, (list, tuple, set)) else [value]
@@ -195,12 +297,16 @@ class ApplicationATSAdapter(ABC):
                     raise SemanticMatchError("Checkbox group has no unambiguous option mapping")
                 for item in chosen:
                     frame.locator(f'{field.selector}[value={json.dumps(item["value"])}]').first.check()
+                    if not frame.locator(f'{field.selector}[value={json.dumps(item["value"])}]').first.is_checked():
+                        raise ValueError("The checkbox group did not acknowledge the selected option")
             else:
                 truthy = value is True or str(value).strip().lower() in ("yes", "true", "1", "checked")
                 if truthy:
                     locator.first.check()
                 else:
                     locator.first.uncheck()
+                if locator.first.is_checked() != truthy:
+                    raise ValueError("The checkbox did not acknowledge the selected state")
         else:
             raise ValueError(f"Unsupported field type: {field.field_type}")
         field.current_value = value
@@ -247,7 +353,21 @@ class ApplicationATSAdapter(ABC):
                         except Exception:
                             pass
                     rendered_name = resume.path.name in frame.content()
+                    structural_ack = False
                     if not native_ack and not rendered_name:
+                        try:
+                            upload_group = frame.locator(
+                                '[role="group"], .file-upload'
+                            ).filter(has_text=re.compile(r"\b(resume|cv)\b", re.I))
+                            acknowledgement_ui = upload_group.locator(
+                                '.file-upload__filename, button[aria-label*="Remove file" i], '
+                                'button[aria-label*="Remove attachment" i]'
+                            )
+                            acknowledgement_ui.first.wait_for(state="attached", timeout=2_000)
+                            structural_ack = acknowledgement_ui.count() > 0
+                        except Exception:
+                            structural_ack = False
+                    if not native_ack and not rendered_name and not structural_ack:
                         raise ValueError("The application page did not acknowledge the configured resume")
                     field.current_value = resume.identifier
                     field.answer_source = "configured_resume"

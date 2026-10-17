@@ -43,6 +43,19 @@ def _tokens(value: Any) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9+#.]{2,}", str(value or "").lower())}
 
 
+def _role_tokens(value: Any) -> set[str]:
+    """Normalize conservative role-family variants without broad inference."""
+    aliases = {
+        "analysis": "analyst", "analytics": "analyst", "analytical": "analyst",
+        "researcher": "research", "researching": "research",
+        "consulting": "consultant", "consultancy": "consultant",
+        "management": "manager", "managing": "manager",
+        "economics": "economist", "economic": "economist",
+        "products": "product",
+    }
+    return {aliases.get(token, token) for token in _tokens(value)}
+
+
 class DeterministicMatcher(MatchingProvider):
     """Offline matcher intended for deterministic tests and no-key operation."""
 
@@ -54,8 +67,8 @@ class DeterministicMatcher(MatchingProvider):
         )
         required = _tokens(job.get("required_skills"))
         preferred = _tokens(job.get("preferred_skills"))
-        title_tokens = _tokens(job.get("title"))
-        target_tokens = _tokens(verified_candidate.get("target_roles"))
+        title_tokens = _role_tokens(job.get("title"))
+        target_tokens = _role_tokens(verified_candidate.get("target_roles"))
         required_matches = sorted(required & candidate_skills)
         required_gaps = sorted(required - candidate_skills)
         preferred_matches = sorted(preferred & candidate_skills)
@@ -86,7 +99,15 @@ class DeterministicMatcher(MatchingProvider):
         if not job.get("full_description") and not job.get("description"):
             missing.append("full job description")
         confidence = max(10, min(100, 90 - 18 * len(missing)))
-        recommendation = "APPLY" if score >= 70 and confidence >= 55 else "REVIEW" if score >= 40 or missing else "SKIP"
+        candidate_evidence_missing = any(item != "full job description" for item in missing)
+        recommendation = (
+            # Preserve the legacy preparation path for a strong structured
+            # skill/title match when discovery has not yet stored prose. A
+            # missing candidate fact still requires review.
+            "APPLY" if score >= 70 and confidence >= 55 and not candidate_evidence_missing
+            else "REVIEW" if score >= 40 or missing or role_overlap
+            else "SKIP"
+        )
         strengths = [f"Required skill match: {skill}" for skill in required_matches[:5]]
         strengths += [f"Preferred skill match: {skill}" for skill in preferred_matches[:3]]
         if role_overlap:

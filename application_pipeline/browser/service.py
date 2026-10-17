@@ -142,6 +142,7 @@ class BrowserApplicationService:
                     role=job.get("title") or "", ats_provider=adapter.provider,
                     url=inspection.url, fields=inspection.fields,
                     authentication_blockers=inspection.blockers,
+                    security_observations=inspection.warnings,
                     screenshot_paths=screenshots, html_snapshot_path=html_path,
                     final_status=status, run_status="INSPECTION_COMPLETE",
                     submission_requests_blocked=list(session.guard.blocked_requests),
@@ -172,24 +173,14 @@ class BrowserApplicationService:
 
                 observed = {}
                 blockers: list[str] = []
+                security_observations: list[str] = []
                 conditional_fields = 0
                 passes = 0
                 handoff_attempted = False
                 max_passes = max(1, int(self.browser_config.max_fill_passes))
                 while passes < max_passes:
                     passes += 1
-                    if inspection.blockers and not handoff_attempted:
-                        handoff_attempted = True
-                        queue_user_action(self.private_db_path, application_id, inspection.blockers, "dry-run challenge detected")
-                        if self.browser_config.manual_handoff and not self.browser_config.headless:
-                            update_user_action_queue(self.private_db_path, application_id, "IN_PROGRESS", "headed handoff started")
-                        if self._manual_handoff(session, inspection.blockers):
-                            inspection = adapter.inspect_form(session, passes)
-                            if not inspection.blockers:
-                                update_user_action_queue(self.private_db_path, application_id, "COMPLETED", "challenge clearance verified")
-                        elif self.browser_config.manual_handoff and not self.browser_config.headless:
-                            update_user_action_queue(self.private_db_path, application_id, "TIMED_OUT", "challenge not verifiably cleared")
-                    blockers.extend(inspection.blockers)
+                    security_observations.extend(inspection.warnings)
                     all_fields, newly_seen = merge_observed_fields(observed, inspection.fields)
                     if passes > 1:
                         conditional_fields += newly_seen
@@ -200,12 +191,31 @@ class BrowserApplicationService:
                         session, visible_fields, resume if not resume_uploaded else None,
                     )
                     resume_uploaded = resume_uploaded or uploaded_now
+                    if inspection.blockers and not handoff_attempted:
+                        handoff_attempted = True
+                        challenge_blockers = list(inspection.blockers)
+                        queue_user_action(
+                            self.private_db_path, application_id, challenge_blockers,
+                            "dry-run challenge detected after safe prefill",
+                        )
+                        if self.browser_config.manual_handoff and not self.browser_config.headless:
+                            update_user_action_queue(self.private_db_path, application_id, "IN_PROGRESS", "headed handoff started")
+                        if self._manual_handoff(session, challenge_blockers):
+                            inspection = adapter.inspect_form(session, passes + 1)
+                            if not inspection.blockers:
+                                update_user_action_queue(self.private_db_path, application_id, "COMPLETED", "challenge clearance verified")
+                                if passes < max_passes:
+                                    continue
+                        elif self.browser_config.manual_handoff and not self.browser_config.headless:
+                            update_user_action_queue(self.private_db_path, application_id, "TIMED_OUT", "challenge not verifiably cleared")
+                    blockers.extend(inspection.blockers)
                     if passes >= max_passes or not session.wait_for_form_change(signature):
                         break
                     inspection = adapter.inspect_form(session, passes + 1)
 
                 fields = list(observed.values())
                 blockers = list(dict.fromkeys(blockers))
+                security_observations = list(dict.fromkeys(security_observations))
                 drafts = []
                 verified_candidate = profile.verified_facts()
                 job_description = str(job.get("full_description") or job.get("description") or "")
@@ -250,6 +260,7 @@ class BrowserApplicationService:
                     role=job.get("title") or "", ats_provider=adapter.provider,
                     url=inspection.url, fields=fields,
                     authentication_blockers=blockers,
+                    security_observations=security_observations,
                     validation_issues=validation,
                     resume_uploaded=resume_uploaded,
                     resume_identifier=resume.identifier if resume_uploaded and resume else "",

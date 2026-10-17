@@ -1,0 +1,22 @@
+{
+  "provenance": {
+    "sanitized_from": [
+      "Karya Research Intern - AI Evaluations",
+      "Instawork Operations Management Intern"
+    ],
+    "observed_on": "2026-10-17",
+    "labels_created_independently": true,
+    "candidate_values_included": false
+  },
+  "expected": [
+    {"label": "First Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Last Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Email", "field_type": "email", "required": true, "visible": true},
+    {"label": "First Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Last Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Email", "field_type": "email", "required": true, "visible": true},
+    {"label": "Country", "field_type": "select", "required": true, "visible": true},
+    {"label": "Phone", "field_type": "phone", "required": true, "visible": true},
+    {"label": "Location (City)", "field_type": "select", "required": true, "visible": true}
+  ]
+}

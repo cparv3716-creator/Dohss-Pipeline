@@ -377,7 +377,17 @@ def detect_authentication_blockers(content: str) -> list[str]:
     soup = BeautifulSoup(content or "", "html.parser")
     text = normalize_question(soup.get_text(" ", strip=True)).lower()
     blockers: list[str] = []
-    if soup.select_one('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha, [data-sitekey]') or "captcha" in text or "confirm you are not a robot" in text:
+    captcha_nodes = soup.select(
+        'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="turnstile"], '
+        '.g-recaptcha, .h-captcha, .cf-turnstile, [data-sitekey]'
+    )
+    actionable_captcha = any(
+        str(node.get("data-size") or "").lower() != "invisible"
+        and "size=invisible" not in str(node.get("src") or "").lower()
+        and not node.find_parent(class_="grecaptcha-badge")
+        for node in captcha_nodes
+    )
+    if actionable_captcha or "captcha challenge" in text or "confirm you are not a robot" in text:
         blockers.append(AuthenticationBlocker.CAPTCHA_REQUIRED.value)
     if soup.select_one('input[type="password"]') and re.search(r"\b(log[ -]?in|sign[ -]?in)\b", text):
         blockers.append(AuthenticationBlocker.LOGIN_REQUIRED.value)
@@ -390,17 +400,83 @@ def detect_authentication_blockers(content: str) -> list[str]:
     return list(dict.fromkeys(blockers))
 
 
-def detect_page_blockers(page: Any) -> list[str]:
+def detect_page_security_state(page: Any) -> tuple[list[str], list[str]]:
+    """Return actionable blockers and passive security observations separately.
+
+    Invisible reCAPTCHA is normally registered on application forms before any
+    challenge exists. Its badge, scripts, and empty hidden response element are
+    not user-actionable and must not trigger a manual handoff.
+    """
     try:
         blockers = detect_authentication_blockers(page.content())
-        if AuthenticationBlocker.CAPTCHA_REQUIRED.value in blockers:
-            solved = page.locator(
-                'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], '
-                'textarea[name="h-captcha-response"], input[name="h-captcha-response"], '
-                'textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]'
-            ).evaluate_all("els => els.some(e => String(e.value || '').trim().length > 20)")
-            if solved:
-                blockers.remove(AuthenticationBlocker.CAPTCHA_REQUIRED.value)
-        return blockers
     except Exception:
-        return []
+        return [], ["SECURITY_STATE_INSPECTION_FAILED"]
+    try:
+        captcha = page.evaluate(
+            r"""
+            () => {
+              const shown = (el) => {
+                const style = getComputedStyle(el);
+                const box = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden'
+                  && Number(style.opacity || 1) > 0 && box.width > 1 && box.height > 1;
+              };
+              const frames = [...document.querySelectorAll(
+                'iframe[src*="recaptcha"],iframe[src*="hcaptcha"],iframe[src*="turnstile"]'
+              )];
+              const widgets = [...document.querySelectorAll(
+                '.g-recaptcha,.h-captcha,.cf-turnstile,[data-sitekey]'
+              )];
+              const responses = [...document.querySelectorAll(
+                'textarea[name="g-recaptcha-response"],input[name="g-recaptcha-response"],'
+                + 'textarea[name="h-captcha-response"],input[name="h-captcha-response"],'
+                + 'textarea[name="cf-turnstile-response"],input[name="cf-turnstile-response"]'
+              )];
+              const info = frames.map((frame) => {
+                let size = '';
+                try { size = new URL(frame.src, location.href).searchParams.get('size') || ''; }
+                catch (_) {}
+                const src = String(frame.src || '').toLowerCase();
+                const badge = !!frame.closest('.grecaptcha-badge');
+                const challengeFrame = /\/(bframe|challenge)(?:[/?]|$)/.test(src);
+                const invisible = size.toLowerCase() === 'invisible' || badge;
+                return { visible: shown(frame), challengeFrame, invisible };
+              });
+              const visibleWidget = widgets.some((widget) =>
+                shown(widget) && String(widget.getAttribute('data-size') || '').toLowerCase() !== 'invisible'
+              );
+              const visibleChallengeText = [...document.querySelectorAll('body *')].some((el) =>
+                shown(el) && /captcha challenge|confirm you are not a robot|select all images/i.test(el.innerText || '')
+              );
+              return {
+                solved: responses.some((el) => String(el.value || '').trim().length > 20),
+                actionable: visibleWidget || visibleChallengeText || info.some((item) =>
+                  item.visible && (item.challengeFrame || !item.invisible)
+                ),
+                invisibleRegistered: info.some((item) => item.invisible)
+                  || widgets.some((widget) => String(widget.getAttribute('data-size') || '').toLowerCase() === 'invisible'),
+                captchaAssetsLoaded: frames.length > 0 || widgets.length > 0 || responses.length > 0,
+              };
+            }
+            """
+        )
+        captcha_blocker = AuthenticationBlocker.CAPTCHA_REQUIRED.value
+        if captcha.get("solved") or not captcha.get("actionable"):
+            blockers = [item for item in blockers if item != captcha_blocker]
+        elif captcha_blocker not in blockers:
+            blockers.append(captcha_blocker)
+
+        warnings: list[str] = []
+        if captcha.get("invisibleRegistered") and not captcha.get("actionable") and not captcha.get("solved"):
+            warnings.append("INVISIBLE_RECAPTCHA_REGISTERED_NOT_CHALLENGED")
+        elif captcha.get("captchaAssetsLoaded") and not captcha.get("actionable") and not captcha.get("solved"):
+            warnings.append("CAPTCHA_ASSETS_LOADED_NO_ACTIONABLE_CHALLENGE")
+        return list(dict.fromkeys(blockers)), warnings
+    except Exception:
+        # Do not discard blockers detected from static markup if the richer
+        # DOM visibility inspection fails.
+        return blockers, ["SECURITY_STATE_DOM_INSPECTION_FAILED"]
+
+
+def detect_page_blockers(page: Any) -> list[str]:
+    return detect_page_security_state(page)[0]

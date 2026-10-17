@@ -87,6 +87,16 @@ class HandoffSession(FakeSession):
         return True
 
 
+class PrefillAwareHandoffSession(HandoffSession):
+    fields = None
+    handoff_saw_prefill = False
+    def manual_user_handoff(self, _reasons):
+        type(self).handoff_saw_prefill = any(
+            item.answer_status == AnswerStatus.FILLED.value for item in (type(self).fields or [])
+        )
+        return super().manual_user_handoff(_reasons)
+
+
 class TimeoutHandoffSession(FakeSession):
     def manual_user_handoff(self, _reasons, *_args):
         return False
@@ -98,6 +108,12 @@ class HandoffAdapter(FakeAdapter):
         type(self).inspections += 1
         result = super().inspect_form(session, pass_number)
         result.blockers = ["CAPTCHA_REQUIRED"] if type(self).inspections == 1 else []
+        return result
+
+    def fill_safe_fields(self, session, fields, resume):
+        result = super().fill_safe_fields(session, fields, resume)
+        if isinstance(session, PrefillAwareHandoffSession):
+            PrefillAwareHandoffSession.fields = fields
         return result
 
 
@@ -197,6 +213,24 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(report.final_status, "FORM_READY_FOR_REVIEW")
             queue = list_user_action_queue(private_db, "ALL")
             self.assertEqual(queue[0]["status"], "COMPLETED")
+
+    def test_manual_captcha_handoff_occurs_after_safe_prefill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            public_db, private_db, app = self._setup(root)
+            profile = CandidateProfile.load(write_profile(root / "profile.yaml"))
+            bank = AnswerBank.load(write_answers(root / "answers.yaml", {"EMAIL": answer("candidate@example.test")}))
+            PrefillAwareHandoffSession.root = root
+            PrefillAwareHandoffSession.fields = None
+            PrefillAwareHandoffSession.handoff_saw_prefill = False
+            HandoffAdapter.inspections = 0
+            service = BrowserApplicationService(
+                str(public_db), str(private_db),
+                BrowserConfig(artifacts_root=str(root), headless=False, manual_handoff=True),
+                session_factory=PrefillAwareHandoffSession, adapter_factory=lambda *_args: HandoffAdapter(),
+            )
+            service.dry_run(app["id"], profile, bank)
+            self.assertTrue(PrefillAwareHandoffSession.handoff_saw_prefill)
 
     def test_manual_captcha_timeout_is_queued_without_submission(self):
         with tempfile.TemporaryDirectory() as tmp:
