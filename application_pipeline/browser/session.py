@@ -5,12 +5,13 @@ import json
 import hashlib
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from .safety import SubmissionGuard
 
@@ -26,6 +27,7 @@ class BrowserConfig:
     save_html: bool = True
     max_fill_passes: int = 3
     dom_settle_ms: int = 800
+    manual_handoff_timeout_seconds: int = 300
 
 
 class BrowserArtifacts:
@@ -44,10 +46,23 @@ class BrowserArtifacts:
         self.log_path = self.directory / "browser.jsonl"
 
     def log(self, event: str, **details: Any) -> None:
+        def safe(value: Any, key: str = "") -> Any:
+            if isinstance(value, dict):
+                return {item_key: safe(item_value, item_key) for item_key, item_value in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [safe(item, key) for item in value]
+            if not isinstance(value, str):
+                return value
+            text = value
+            if key.lower().endswith("url"):
+                text = re.sub(r"[?#].*$", "", text)
+            text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[REDACTED_EMAIL]", text, flags=re.I)
+            text = re.sub(r"(?<!\d)(?:\+?\d[\d ()-]{7,}\d)(?!\d)", "[REDACTED_PHONE]", text)
+            return text
         record = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "event": event,
-            **details,
+            **{key: safe(value, key) for key, value in details.items()},
         }
         with self.log_path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
@@ -77,6 +92,15 @@ def sanitize_html_snapshot(content: str) -> str:
         for attribute in list(tag.attrs):
             if any(marker in attribute.lower() for marker in ("token", "secret", "csrf", "auth")):
                 tag[attribute] = "[REDACTED]"
+    for node in list(soup.find_all(string=True)):
+        if not isinstance(node, NavigableString):
+            continue
+        text = str(node)
+        redacted = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[REDACTED_EMAIL]", text, flags=re.I)
+        redacted = re.sub(r"(?<!\d)(?:\+?\d[\d ()-]{7,}\d)(?!\d)", "[REDACTED_PHONE]", redacted)
+        redacted = re.sub(r"\b[^<>\r\n]{1,100}\.(?:pdf|docx?|rtf)\b", "[REDACTED_FILE]", redacted, flags=re.I)
+        if redacted != text:
+            node.replace_with(redacted)
     return str(soup)
 
 
@@ -163,15 +187,55 @@ class BrowserSession:
         self.artifacts.log("html_snapshot_saved", path=str(path))
         return str(path)
 
-    def manual_user_handoff(self, reasons: list[str]) -> bool:
+    def _challenge_clearance_evidence(self, reasons: list[str]) -> bool:
+        """Require positive page evidence; a hidden CAPTCHA alone is insufficient."""
+        if not self.page or self.page.is_closed():
+            return False
+        if "CAPTCHA_REQUIRED" in reasons:
+            try:
+                solved = self.page.locator(
+                    'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], '
+                    'textarea[name="h-captcha-response"], input[name="h-captcha-response"], '
+                    'textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]'
+                ).evaluate_all("els => els.some(e => String(e.value || '').trim().length > 20)")
+            except Exception:
+                solved = False
+            if not solved:
+                return False
+        if any(reason in reasons for reason in ("LOGIN_REQUIRED", "MFA_REQUIRED", "OTP_REQUIRED")):
+            try:
+                controls = self.page.locator("form input, form select, form textarea").count()
+                password = self.page.locator('input[type="password"]:visible').count()
+            except Exception:
+                return False
+            if controls == 0 or password:
+                return False
+        return True
+
+    def manual_user_handoff(self, reasons: list[str], blocker_detector: Any = None) -> bool:
         if self.config.headless or not self.config.manual_handoff:
             return False
         self.artifacts.log("manual_handoff_started", reasons=reasons)
         print("Browser requires manual action: " + ", ".join(reasons))
         print("Complete login/MFA/CAPTCHA in the headed browser. Do not submit the application.")
-        response = input("Press Enter to resume inspection, or type 'abort': ").strip().lower()
-        resumed = response != "abort"
-        self.artifacts.log("manual_handoff_finished", resumed=resumed)
+        print("The page will resume only after challenge-clearance evidence is detected.")
+        deadline = time.monotonic() + max(1, int(self.config.manual_handoff_timeout_seconds))
+        stable_checks = 0
+        outcome = "TIMED_OUT"
+        while time.monotonic() < deadline:
+            try:
+                remaining = list(blocker_detector() if blocker_detector else reasons)
+                cleared = not remaining and self._challenge_clearance_evidence(reasons)
+                stable_checks = stable_checks + 1 if cleared else 0
+                if stable_checks >= 2:
+                    outcome = "CLEARED"
+                    break
+                self.page.wait_for_timeout(1_000)
+            except Exception:
+                outcome = "BROWSER_CLOSED" if not self.page or self.page.is_closed() else "FAILED"
+                break
+        resumed = outcome == "CLEARED"
+        self.artifacts.log("manual_handoff_finished", resumed=resumed, outcome=outcome)
         return resumed
 
     def close(self) -> None:

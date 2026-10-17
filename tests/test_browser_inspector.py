@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,11 +6,14 @@ from pathlib import Path
 from application_pipeline.browser.inspector import (
     detect_authentication_blockers,
     extract_fields_from_html,
+    normalize_fields,
     normalize_question,
     resolve_answers,
 )
 from application_pipeline.browser.models import AnswerStatus
+from application_pipeline.browser.metrics import required_detection_metrics
 from application_pipeline.browser.safety import ResumePolicy, SafeFillPolicy, SubmissionGuard
+from application_pipeline.ats.base import _matches, _unique_option
 from application_pipeline.questions import classify_question
 from candidate import AnswerBank, CandidateProfile
 from tests.helpers import answer, verified, write_answers, write_profile
@@ -19,6 +23,44 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class BrowserInspectorTests(unittest.TestCase):
+    def test_logical_id_survives_react_rerender_ids(self):
+        common = {
+            "name": "", "tag": "input", "type": "text", "label": "Degree",
+            "selector": "#dynamic", "required": True, "required_source": "aria",
+            "visible": True, "enabled": True, "group_key": "education-question",
+        }
+        first = normalize_fields([{**common, "id": "react-select-12", "custom_select": True}])[0]
+        second = normalize_fields([{**common, "id": "react-select-47", "custom_select": True}])[0]
+        self.assertEqual(first.logical_id, second.logical_id)
+
+    def test_semantic_option_matching_is_conservative(self):
+        self.assertTrue(_matches("MA Economics", {"value": "masters", "label": "Master's degree"}, "DEGREE"))
+        self.assertTrue(_matches("M.A. Economics", {"value": "ma", "label": "Master of Arts (M.A.)"}, "DEGREE"))
+        self.assertTrue(_matches(
+            "Indian Institute of Technology Madras",
+            {"value": "iitm", "label": "Indian Institute of Technology Madras (IITM)"},
+            "UNIVERSITY",
+        ))
+        self.assertTrue(_matches("immediate", {"value": "0", "label": "0 days"}, "NOTICE_PERIOD"))
+        self.assertFalse(_matches("15-30 LPA", {"value": "10-20", "label": "10–20 LPA"}, "EXPECTED_CTC"))
+        self.assertFalse(_matches("Chennai", {"value": "Tamil Nadu", "label": "Tamil Nadu"}, "CURRENT_CITY"))
+        ambiguous = [{"value": "yes", "label": "Yes"}, {"value": "true", "label": "Yes"}]
+        self.assertIsNone(_unique_option(True, ambiguous, "WORK_AUTHORIZATION"))
+
+    def test_sanitized_greenhouse_reference_precision_recall_and_deduplication(self):
+        fixture = FIXTURES / "greenhouse_semantic_reference.html"
+        labels = json.loads((FIXTURES / "greenhouse_semantic_reference.json").read_text(encoding="utf-8"))
+        fields = extract_fields_from_html(fixture.read_text(encoding="utf-8"), fixture.as_uri())
+        metrics = required_detection_metrics(labels["expected"], fields)
+        self.assertGreaterEqual(metrics.precision, 0.95)
+        self.assertGreaterEqual(metrics.recall, 0.95)
+        self.assertEqual(len({field.logical_id for field in fields}), len(fields))
+        self.assertEqual(sum(field.label == "Degree" for field in fields), 1)
+        self.assertEqual(sum(field.label == "City" for field in fields), 2)
+        state = next(field for field in fields if field.label == "State")
+        self.assertFalse(state.visible)
+        self.assertEqual(state.answer_status, AnswerStatus.HIDDEN_INACTIVE.value)
+
     def test_greenhouse_field_extraction_and_control_parsing(self):
         fields = extract_fields_from_html((FIXTURES / "greenhouse_application.html").read_text(encoding="utf-8"))
         types = {field.field_type for field in fields}

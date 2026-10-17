@@ -11,6 +11,51 @@ from application_pipeline.browser.models import AnswerStatus, ApplicationField, 
 from application_pipeline.browser.safety import ResumeArtifact
 
 
+class SemanticMatchError(ValueError):
+    """A verified value could not be mapped to exactly one control option."""
+
+
+def _normal(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", _string_value(value).casefold()).strip()
+
+
+def _degree_level(value: Any) -> str:
+    text = _normal(value)
+    if re.search(r"\b(phd|doctor(?:ate|al))\b", text):
+        return "doctorate"
+    if re.search(r"\b(m\s*a|m\s*sc|m\s*s|m\s*b\s*a|master(?:s)?)\b", text):
+        return "masters"
+    if re.search(r"\b(b\s*a|b\s*sc|b\s*s|b\s*tech|bachelor(?:s)?)\b", text):
+        return "bachelors"
+    return ""
+
+
+def _degree_kind(value: Any) -> str:
+    text = _normal(value)
+    kinds = (
+        ("masters_arts", r"\b(m\s*a|master(?:s)? of arts)\b"),
+        ("masters_science", r"\b(m\s*s|m\s*sc|master(?:s)? of science)\b"),
+        ("masters_business", r"\b(m\s*b\s*a|master(?:s)? of business administration)\b"),
+        ("bachelors_arts", r"\b(b\s*a|bachelor(?:s)? of arts)\b"),
+        ("bachelors_science", r"\b(b\s*s|b\s*sc|bachelor(?:s)? of science)\b"),
+        ("bachelors_technology", r"\b(b\s*tech|bachelor(?:s)? of technology)\b"),
+    )
+    return next((name for name, pattern in kinds if re.search(pattern, text)), "")
+
+
+def _search_query(value: Any, question_type: str) -> str:
+    if question_type in {"DEGREE", "HIGHEST_EDUCATION"}:
+        return {
+            "masters_arts": "Master of Arts",
+            "masters_science": "Master of Science",
+            "masters_business": "Master of Business Administration",
+            "bachelors_arts": "Bachelor of Arts",
+            "bachelors_science": "Bachelor of Science",
+            "bachelors_technology": "Bachelor of Technology",
+        }.get(_degree_kind(value), _string_value(value))
+    return _string_value(value)
+
+
 def _string_value(value: Any) -> str:
     if isinstance(value, bool):
         return "Yes" if value else "No"
@@ -21,14 +66,38 @@ def _string_value(value: Any) -> str:
     return str(value)
 
 
-def _matches(value: Any, option: dict[str, str]) -> bool:
-    desired = _string_value(value).strip().lower()
+def _matches(value: Any, option: dict[str, str], question_type: str = "") -> bool:
+    desired = _normal(value)
     aliases = {desired}
     if desired in ("true", "yes", "authorized", "willing"):
         aliases.update(("yes", "true"))
     if desired in ("false", "no", "not authorized", "not willing"):
         aliases.update(("no", "false"))
-    return str(option.get("value") or "").strip().lower() in aliases or str(option.get("label") or "").strip().lower() in aliases
+    if question_type in {"NOTICE_PERIOD", "AVAILABILITY"} and desired == "immediate":
+        aliases.update(("immediately", "0 days", "zero days"))
+    option_values = {_normal(option.get("value") or ""), _normal(option.get("label") or "")}
+    if option_values & aliases:
+        return True
+    if question_type == "UNIVERSITY":
+        return any(
+            item == desired
+            or (item.startswith(desired + " ") and bool(re.fullmatch(r"[a-z0-9]{2,8}", item[len(desired):].strip())))
+            for item in option_values
+        )
+    if question_type in {"DEGREE", "HIGHEST_EDUCATION"}:
+        wanted_kind = _degree_kind(value)
+        option_kinds = {kind for item in option_values if (kind := _degree_kind(item))}
+        if wanted_kind and option_kinds:
+            return option_kinds == {wanted_kind}
+        wanted_level = _degree_level(value)
+        levels = {level for item in option_values if (level := _degree_level(item))}
+        return bool(wanted_level and levels == {wanted_level})
+    return False
+
+
+def _unique_option(value: Any, options: list[dict[str, str]], question_type: str) -> Optional[dict[str, str]]:
+    matches = [item for item in options if _matches(value, item, question_type)]
+    return matches[0] if len(matches) == 1 else None
 
 
 class ApplicationATSAdapter(ABC):
@@ -74,37 +143,64 @@ class ApplicationATSAdapter(ABC):
             locator.first.fill(_string_value(value))
         elif field.field_type == "select" and field.control_kind == "combobox":
             locator.first.click()
-            page.wait_for_timeout(150)
+            page.wait_for_timeout(250)
             options = frame.locator('[role="option"]:visible')
+            try:
+                options.first.wait_for(state="visible", timeout=2_000)
+            except Exception:
+                pass
             available = options.evaluate_all(
                 "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
             )
+            if not _unique_option(value, list(available), field.canonical_question_type):
+                # Searchable React controls frequently render options only
+                # after receiving the exact verified value. Typing does not
+                # select or submit anything.
+                try:
+                    locator.first.fill(_search_query(value, field.canonical_question_type))
+                    try:
+                        options.first.wait_for(state="visible", timeout=2_000)
+                    except Exception:
+                        page.wait_for_timeout(300)
+                    available = options.evaluate_all(
+                        "els => els.map(e => ({value: e.getAttribute('data-value') || e.innerText.trim(), label: e.innerText.trim()}))"
+                    )
+                except Exception:
+                    pass
             field.options = list(available)
-            option = next((item for item in field.options if _matches(value, item)), None)
+            option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
                 page.keyboard.press("Escape")
-                raise ValueError("No custom dropdown option exactly matches the verified answer")
+                raise SemanticMatchError("No unique custom dropdown option exactly matches the verified answer")
             choices = options.filter(has_text=re.compile(rf"^\s*{re.escape(str(option['label']))}\s*$", re.I))
             if choices.count() != 1:
                 page.keyboard.press("Escape")
-                raise ValueError("Custom dropdown answer is ambiguous")
+                raise SemanticMatchError("Custom dropdown answer is ambiguous")
             choices.first.click()
         elif field.field_type == "select":
-            option = next((item for item in field.options if _matches(value, item)), None)
+            option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
-                raise ValueError("No dropdown option matches the verified answer")
+                raise SemanticMatchError("No unique dropdown option matches the verified answer")
             locator.first.select_option(value=option["value"])
         elif field.field_type == "radio":
-            option = next((item for item in field.options if _matches(value, item)), None)
+            option = _unique_option(value, field.options, field.canonical_question_type)
             if not option:
-                raise ValueError("No radio option matches the verified answer")
+                raise SemanticMatchError("No unique radio option matches the verified answer")
             frame.locator(f'{field.selector}[value={json.dumps(option["value"])}]').first.check()
         elif field.field_type == "checkbox":
-            truthy = value is True or str(value).strip().lower() in ("yes", "true", "1", "checked")
-            if truthy:
-                locator.first.check()
+            if field.control_kind == "checkbox_group" and len(field.options) > 1:
+                wanted = list(value) if isinstance(value, (list, tuple, set)) else [value]
+                chosen = [_unique_option(item, field.options, field.canonical_question_type) for item in wanted]
+                if any(item is None for item in chosen) or len({item["value"] for item in chosen if item}) != len(wanted):
+                    raise SemanticMatchError("Checkbox group has no unambiguous option mapping")
+                for item in chosen:
+                    frame.locator(f'{field.selector}[value={json.dumps(item["value"])}]').first.check()
             else:
-                locator.first.uncheck()
+                truthy = value is True or str(value).strip().lower() in ("yes", "true", "1", "checked")
+                if truthy:
+                    locator.first.check()
+                else:
+                    locator.first.uncheck()
         else:
             raise ValueError(f"Unsupported field type: {field.field_type}")
         field.current_value = value
@@ -171,9 +267,13 @@ class ApplicationATSAdapter(ABC):
             try:
                 self._fill_field(session.page, field)
                 session.artifacts.log("field_filled", field_id=field.field_id, question_type=field.canonical_question_type)
+            except SemanticMatchError:
+                field.answer_status = AnswerStatus.NEEDS_SEMANTIC_REVIEW.value
+                field.answer_reason = "VERIFIED_VALUE_HAS_NO_UNAMBIGUOUS_CONTROL_MATCH"
+                session.artifacts.log("field_needs_semantic_review", field_id=field.field_id, question_type=field.canonical_question_type)
             except Exception as exc:
                 field.answer_status = AnswerStatus.ERROR.value
-                field.answer_reason = f"FIELD_FILL_FAILED:{type(exc).__name__}"
+                field.answer_reason = f"FILL_ATTEMPT_FAILED:{type(exc).__name__}"
                 session.artifacts.log("field_fill_failed", field_id=field.field_id, error=field.answer_reason)
 
         return resume_uploaded

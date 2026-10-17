@@ -1,0 +1,40 @@
+<!doctype html>
+<html><body><form id="application_form">
+  <div class="field" data-field-id="first"><label for="first">First Name *</label><input id="first" name="first_name" required></div>
+  <div class="field" data-field-id="last"><label for="last">Last Name *</label><input id="last" name="last_name" aria-required="true"></div>
+  <div class="field" data-field-id="email"><label id="email-label" for="email">Email *</label><input id="email" type="email" aria-labelledby="email-label" required></div>
+  <div class="field" data-field-id="phone"><label for="phone">Phone</label><input id="phone" type="tel"></div>
+  <div class="field" data-field-id="education">
+    <label id="education-label" for="education-combo">Degree *</label>
+    <input id="education-combo" role="combobox" aria-labelledby="education-label" aria-controls="degree-options" aria-required="true">
+    <input id="education-react-input" aria-hidden="true" style="width:1px;height:1px" tabindex="-1">
+    <div id="degree-options" role="listbox" hidden><div role="option" data-value="masters">Master's degree</div></div>
+  </div>
+  <div class="field" data-field-id="grad-year"><label for="grad-year">Graduation year *</label><select id="grad-year" required><option></option><option value="2027">2027</option></select></div>
+  <div class="field" data-field-id="grad-month"><label for="grad-month">Graduation month</label><select id="grad-month"><option></option><option>May</option></select></div>
+  <div class="field" data-field-id="country"><label for="country">Country *</label><select id="country" required><option>India</option></select></div>
+  <div class="field" data-field-id="location-city"><label for="location-city">Location (City) *</label><input id="location-city" role="combobox" aria-required="true"><input aria-hidden="true" required></div>
+  <div class="field" data-field-id="school"><label for="school">School *</label><input id="school" role="combobox" aria-required="true"><input aria-hidden="true" required></div>
+  <div class="field" data-field-id="discipline"><label for="discipline">Discipline *</label><input id="discipline" role="combobox" aria-required="true"><input aria-hidden="true" required></div>
+  <div class="field" data-field-id="start-month"><label for="start-month">Start date month *</label><select id="start-month" required><option>July</option></select></div>
+  <div class="field" data-field-id="start-year"><label for="start-year">Start date year *</label><input id="start-year" type="number" required></div>
+  <div class="field" data-field-id="end-month"><label for="end-month">End date month *</label><select id="end-month" required><option>May</option></select></div>
+  <div class="field" data-field-id="end-year"><label for="end-year">End date year *</label><input id="end-year" type="number" required></div>
+  <div class="field" data-field-id="linkedin"><label for="linkedin">LinkedIn profile *</label><input id="linkedin" required></div>
+  <div class="field" data-field-id="privacy"><label for="privacy">I acknowledge the applicant privacy notice *</label><select id="privacy" required><option>I agree</option></select></div>
+  <div class="field" data-field-id="education-level"><label id="education-level-label">Highest Level of Education Completed *</label><button type="button" role="combobox" aria-labelledby="education-level-label" aria-required="true">Select...</button></div>
+  <fieldset data-field-id="sponsorship"><legend>Will you now or in the future require visa sponsorship? *</legend>
+    <label><input type="radio" name="sponsorship" value="yes" required>Yes</label>
+    <label><input type="radio" name="sponsorship" value="no">No</label>
+  </fieldset>
+  <fieldset data-field-id="preferences"><legend>Work preferences</legend>
+    <label><input type="checkbox" name="preferences" value="remote">Remote</label>
+    <label><input type="checkbox" name="preferences" value="hybrid">Hybrid</label>
+  </fieldset>
+  <div class="field" data-field-id="current-city"><label for="current-city">City</label><input id="current-city"></div>
+  <div class="field" data-field-id="preferred-city"><label for="preferred-city">City</label><input id="preferred-city"></div>
+  <div class="field" data-field-id="conditional-state" hidden><label for="state">State *</label><select id="state" required><option>Tamil Nadu</option></select></div>
+  <div class="field" data-field-id="resume"><label for="resume">Resume/CV *</label><input id="resume" type="file" required></div>
+  <div role="presentation"><input></div>
+  <button type="submit">Submit Application</button>
+</form></body></html>

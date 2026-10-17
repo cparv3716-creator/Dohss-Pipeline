@@ -1,10 +1,12 @@
+import json
 import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
 
 from application_pipeline.ats.greenhouse import GreenhouseAdapter
-from application_pipeline.browser.inspector import resolve_answers
+from application_pipeline.browser.inspector import inspect_page_fields, resolve_answers
+from application_pipeline.browser.metrics import required_detection_metrics
 from application_pipeline.browser.models import AnswerStatus
 from application_pipeline.browser.safety import ResumeArtifact, SafeFillPolicy
 from application_pipeline.browser.session import BrowserConfig, BrowserSession
@@ -18,10 +20,64 @@ from tests.helpers import answer, write_answers, write_profile
 
 FIXTURE = Path(__file__).parent / "fixtures" / "greenhouse_application.html"
 DYNAMIC_FIXTURE = Path(__file__).parent / "fixtures" / "dynamic_application.html"
+SEMANTIC_FIXTURE = Path(__file__).parent / "fixtures" / "greenhouse_semantic_reference.html"
+SEMANTIC_LABELS = Path(__file__).parent / "fixtures" / "greenhouse_semantic_reference.json"
+DEGREE_FIXTURE = Path(__file__).parent / "fixtures" / "greenhouse_degree_combobox.html"
 
 
 @unittest.skipUnless(importlib.util.find_spec("playwright"), "Playwright package is not installed")
 class LocalPlaywrightTests(unittest.TestCase):
+    def test_delayed_greenhouse_degree_combobox_exact_semantic_fill(self):
+        private_parent = Path("data/private")
+        private_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=private_parent) as tmp:
+            root = Path(tmp).resolve()
+            profile = CandidateProfile.load(write_profile(root / "profile.yaml"))
+            bank = AnswerBank.load(write_answers(root / "answers.yaml", {"DEGREE": answer("M.A. Economics")}))
+            context = BrowserSession(BrowserConfig(headless=True, artifacts_root=str(root), save_html=False), 997)
+            try:
+                session = context.__enter__()
+            except Exception as exc:
+                if "Executable doesn't exist" in str(exc):
+                    self.skipTest("Playwright Chromium is not installed")
+                raise
+            try:
+                adapter = GreenhouseAdapter()
+                adapter.open_application(session, DEGREE_FIXTURE.resolve().as_uri())
+                inspection = adapter.inspect_form(session)
+                self.assertEqual(sum(item.label == "Degree" for item in inspection.fields), 1)
+                resolve_answers(inspection.fields, profile, bank, SafeFillPolicy())
+                adapter.fill_safe_fields(session, inspection.fields)
+                degree = next(item for item in inspection.fields if item.label == "Degree")
+                self.assertEqual(degree.answer_status, AnswerStatus.FILLED.value)
+                self.assertEqual(session.page.locator("#degree-input").input_value(), "Master's degree")
+            finally:
+                context.__exit__(None, None, None)
+
+    def test_live_dom_semantic_reference_meets_measured_detection_target(self):
+        private_parent = Path("data/private")
+        private_parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=private_parent) as tmp:
+            root = Path(tmp).resolve()
+            context = BrowserSession(BrowserConfig(headless=True, artifacts_root=str(root), save_html=False), 998)
+            try:
+                session = context.__enter__()
+            except Exception as exc:
+                if "Executable doesn't exist" in str(exc):
+                    self.skipTest("Playwright Chromium is not installed")
+                raise
+            try:
+                session.open(SEMANTIC_FIXTURE.resolve().as_uri())
+                fields = inspect_page_fields(session.page)
+                expected = json.loads(SEMANTIC_LABELS.read_text(encoding="utf-8"))["expected"]
+                metrics = required_detection_metrics(expected, fields)
+                self.assertGreaterEqual(metrics.precision, 0.95)
+                self.assertGreaterEqual(metrics.recall, 0.95)
+                self.assertEqual(sum(item.label == "Degree" for item in fields), 1)
+                self.assertEqual(sum(item.label == "City" for item in fields), 2)
+            finally:
+                context.__exit__(None, None, None)
+
     def test_real_chromium_safe_fill_upload_and_submit_guard(self):
         private_parent = Path("data/private")
         private_parent.mkdir(parents=True, exist_ok=True)

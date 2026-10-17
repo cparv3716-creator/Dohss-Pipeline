@@ -40,7 +40,11 @@ def calculate_readiness(
     resume_required: bool = False,
     resume_uploaded: bool = False,
 ) -> ReadinessResult:
-    fields = [item for item in fields if item.visible]
+    unique: dict[str, ApplicationField] = {}
+    for item in fields:
+        if item.visible:
+            unique[item.logical_id or f"{item.frame_url}|{item.field_id}|{item.field_type}"] = item
+    fields = list(unique.values())
     blockers = list(blockers)
     issues = list(validation_issues)
     required = [item for item in fields if item.required]

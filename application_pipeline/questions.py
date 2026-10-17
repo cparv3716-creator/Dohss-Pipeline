@@ -34,7 +34,9 @@ PATTERNS = (
     ("PORTFOLIO", r"\b(portfolio|personal website)\b"),
     ("VERIFIED_SKILLS", r"\b(skills|technologies|tools)\b.*\b(proficient|experience|worked|used)\b|\btechnical skills\b"),
     ("CGPA", r"\b(cgpa|gpa|grade point)\b"),
-    ("GRADUATION_YEAR", r"\b(graduat(e|ion) (year|date)|year of passing)\b"),
+    ("GRADUATION_DATE", r"\bgraduat(e|ion) date\b"),
+    ("GRADUATION_YEAR", r"\bgraduat(e|ion) year\b|\byear of passing\b"),
+    ("GRADUATION_MONTH", r"\bgraduat(e|ion) month\b|\bend date month\b"),
     ("UNIVERSITY", r"\b(university|college|institution)\b"),
     ("DEGREE", r"\b(degree|field of study|major)\b"),
     ("HIGHEST_EDUCATION", r"\b(highest|maximum) (education|qualification)\b"),
@@ -95,11 +97,15 @@ def classify_question(question: str) -> ClassifiedQuestion:
         return ClassifiedQuestion("EXPECTED_CTC", 95)
     if re.search(r"\blocation\s*\(\s*city\s*\)|\bcity of residence\b", lower):
         return ClassifiedQuestion("CURRENT_CITY", 95)
+    if re.fullmatch(r"(?:current )?city", lower):
+        return ClassifiedQuestion("CURRENT_CITY", 90)
     if re.fullmatch(r"(?:education\s+)?school", lower):
         return ClassifiedQuestion("UNIVERSITY", 95)
     if re.fullmatch(r"end date year", lower):
         return ClassifiedQuestion("GRADUATION_YEAR", 95)
-    if re.fullmatch(r"(?:start date (?:month|year)|end date month)", lower):
+    if re.fullmatch(r"end date month", lower):
+        return ClassifiedQuestion("GRADUATION_MONTH", 90)
+    if re.fullmatch(r"start date (?:month|year)", lower):
         return ClassifiedQuestion("OTHER", 20, free_text=False)
     explicit_duration = bool(re.search(
         r"\bhow many\s+years?\b|\byears?\s+of\s+.+?\s+experience\b|"

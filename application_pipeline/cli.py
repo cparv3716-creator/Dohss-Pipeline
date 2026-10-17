@@ -10,7 +10,10 @@ from database import db
 
 from .enrichment import JobDetailEnricher
 from .preparation import prepare_job, score_job
-from .private_db import get_application, get_assessment, get_form_runs, list_applications
+from .private_db import (
+    get_application, get_assessment, get_form_runs, list_applications,
+    list_user_action_queue,
+)
 
 
 def settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -204,6 +207,7 @@ def _browser_service(config: dict[str, Any], args: list[str]):
         save_html="--no-html" not in args and bool(browser.get("save_html", True)),
         max_fill_passes=int(browser.get("max_fill_passes", 3)),
         dom_settle_ms=int(browser.get("dom_settle_ms", 800)),
+        manual_handoff_timeout_seconds=int(browser.get("manual_handoff_timeout_seconds", 300)),
     )
     policy = SafeFillPolicy(
         minimum_confidence=int(browser.get("minimum_confidence", 85)),
@@ -231,6 +235,7 @@ def dry_run_application(config: dict[str, Any], application_id: int, args: list[
 
 def display_browser_report(report: Any) -> str:
     payload = report.to_dict()
+    metrics = payload.get("field_metrics") or {}
     return "\n".join(
         [
             f"Company: {payload['company']}",
@@ -238,6 +243,7 @@ def display_browser_report(report: Any) -> str:
             f"ATS: {payload['ats_provider']}",
             f"Fields detected: {payload['fields_detected']}",
             f"Safely filled: {payload['answers_filled']}",
+            f"Eligible safe-fill success: {metrics.get('eligible_safe_fill_success_rate', 'not measurable')}",
             f"Unanswered required: {len(payload['missing_answers'])}",
             f"Sensitive review: {len(payload['sensitive_questions'])}",
             f"Resume uploaded: {'yes' if payload['resume_uploaded'] else 'no'}",
@@ -276,6 +282,7 @@ def review_application(config: dict[str, Any], application_id: int) -> str:
     if not runs:
         raise ValueError("No browser inspection or dry run is available for this application")
     run = runs[0]
+    assessment = get_assessment(cfg["private_db_path"], application["job_id"])
     payload = {}
     report_path = Path(str(run.get("report_path") or ""))
     if report_path.is_file():
@@ -288,6 +295,7 @@ def review_application(config: dict[str, Any], application_id: int) -> str:
         f"{(job or {}).get('title', 'Unknown role')} — {(job or {}).get('company', 'Unknown company')}",
         f"ATS: {application.get('ats_provider') or 'Unknown'}",
         f"Match: {application.get('match_score') if application.get('match_score') is not None else 'unknown'}/100",
+        f"Eligibility: {(assessment or {}).get('eligibility_status', 'unknown')}",
         "",
         "Fields:",
     ]
@@ -301,19 +309,44 @@ def review_application(config: dict[str, Any], application_id: int) -> str:
             lines.append(f"[OK] {label} — {source or 'verified/configured'}")
         elif status == "SKIPPED_SENSITIVE":
             lines.append(f"[!] {label} — sensitive/manual only")
+        elif status == "NEEDS_SEMANTIC_REVIEW":
+            lines.append(f"[!] {label} — verified answer needs exact option review")
+        elif status == "ERROR":
+            lines.append(f"[!] {label} — fill attempted but failed")
         elif str(item.get("canonical_question_type")) in {"WHY_COMPANY", "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE"}:
-            lines.append(f"[!] {label} — prepared text requires review")
+            lines.append(f"[!] {label} — grounded draft/manual approval required")
         else:
             lines.append(f"[!] {label} — unanswered")
-    required = [item for item in fields if item.get("visible", True) and item.get("required")]
+    drafts = payload.get("free_text_drafts") or []
+    if drafts:
+        lines.extend(["", "Grounded free-text drafts (human approval required):"])
+        for draft in drafts:
+            provenance = ", ".join(draft.get("provenance") or []) or "insufficient verified evidence"
+            lines.append(
+                f"[!] {draft.get('question_type', 'FREE_TEXT')} — {draft.get('status', 'NEEDS_REVIEW')} "
+                f"— evidence: {provenance}"
+            )
+    unique = {item.get("logical_id") or item.get("field_id"): item for item in fields if item.get("visible", True)}
+    required = [item for item in unique.values() if item.get("required")]
     safe = [item for item in fields if item.get("visible", True) and item.get("answer_status") in resolved]
+    blockers = payload.get("authentication_blockers") or json_list(run.get("blockers_json"))
+    reasons = readiness.get("reasons") or []
     lines.extend([
         "",
-        f"Required fields: {len(required)}",
+        f"Unique required fields: {len(required)}",
         f"Safely resolved: {len(safe)}",
-        f"Manual review: {len([item for item in fields if item.get('visible', True)]) - len(safe)}",
+        f"Resume upload: {'complete' if payload.get('resume_uploaded') else 'not complete'}",
+        f"Manual review: {len(unique) - len(safe)}",
+        f"Authentication/CAPTCHA: {', '.join(blockers) if blockers else 'none'}",
         f"Application readiness: {readiness.get('score', 0)}%",
         f"Submission readiness: {readiness.get('status', 'NEEDS_INFORMATION')}",
+        f"Readiness blockers: {', '.join(reasons) if reasons else 'none'}",
+        f"Last validation: {run.get('updated_at') or 'unknown'}",
         "Submission: BLOCKED BY POLICY",
     ])
     return "\n".join(lines)
+
+
+def review_queue(config: dict[str, Any], args: list[str]) -> list[dict[str, Any]]:
+    status = "ALL" if "--all" in args else "PENDING"
+    return list_user_action_queue(settings(config)["private_db_path"], status=status, limit=_limit(args, 100))

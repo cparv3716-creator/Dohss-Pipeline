@@ -27,6 +27,9 @@ class AnswerStatus(str, Enum):
     SKIPPED_UNKNOWN = "SKIPPED_UNKNOWN"
     SKIPPED_SENSITIVE = "SKIPPED_SENSITIVE"
     SKIPPED_POLICY = "SKIPPED_POLICY"
+    NEEDS_SEMANTIC_REVIEW = "NEEDS_SEMANTIC_REVIEW"
+    HIDDEN_INACTIVE = "HIDDEN_INACTIVE"
+    BLOCKED_AUTHENTICATION = "BLOCKED_AUTHENTICATION"
     UPLOADED = "UPLOADED"
     ERROR = "ERROR"
 
@@ -62,6 +65,10 @@ class ApplicationField:
     control_kind: str = "native"
     detected_pass: int = 1
     visible: bool = True
+    enabled: bool = True
+    required_source: str = ""
+    logical_id: str = ""
+    semantic_key: str = ""
     proposed_value: Any = field(default=None, repr=False)
 
     def to_dict(self, include_proposed_value: bool = False) -> dict[str, Any]:
@@ -117,9 +124,18 @@ class DryRunReport:
     inspection_passes: int = 1
     conditional_fields_detected: int = 0
     readiness: dict[str, Any] = field(default_factory=dict)
+    free_text_drafts: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         fields = [item.to_dict() for item in self.fields]
+        fill_eligible = sum(
+            item["answer_status"] in {
+                AnswerStatus.FILLED.value, AnswerStatus.ERROR.value,
+                AnswerStatus.NEEDS_SEMANTIC_REVIEW.value, AnswerStatus.PROPOSED.value,
+            }
+            for item in fields if item["field_type"] != FieldType.FILE.value and item["visible"]
+        )
+        correctly_filled = sum(item["answer_status"] == AnswerStatus.FILLED.value for item in fields)
         return {
             "application_id": self.application_id,
             "company": self.company,
@@ -127,6 +143,7 @@ class DryRunReport:
             "ats_provider": self.ats_provider,
             "url": self.url,
             "fields_detected": len(fields),
+            "unique_logical_fields": len({item.get("logical_id") or item["field_id"] for item in fields}),
             "answers_filled": sum(item["answer_status"] == AnswerStatus.FILLED.value for item in fields),
             "answers_skipped": sum(item["answer_status"].startswith("SKIPPED") for item in fields),
             "missing_answers": [item["raw_question"] for item in fields if item["visible"] and item["required"] and item["answer_status"] not in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value)],
@@ -146,4 +163,24 @@ class DryRunReport:
             "inspection_passes": self.inspection_passes,
             "conditional_fields_detected": self.conditional_fields_detected,
             "readiness": self.readiness,
+            "field_metrics": {
+                "eligible_safe_fill_fields": fill_eligible,
+                "correctly_filled": correctly_filled,
+                "fill_attempt_failed": sum(item["answer_status"] == AnswerStatus.ERROR.value for item in fields),
+                "known_but_policy_blocked": sum(
+                    bool(item["answer_verified"]) and item["answer_status"] in {
+                        AnswerStatus.SKIPPED_POLICY.value, AnswerStatus.SKIPPED_SENSITIVE.value,
+                    } for item in fields
+                ),
+                "unknown_answer": sum(item["answer_status"] == AnswerStatus.SKIPPED_UNKNOWN.value for item in fields),
+                "needs_semantic_review": sum(item["answer_status"] == AnswerStatus.NEEDS_SEMANTIC_REVIEW.value for item in fields),
+                "hidden_inactive": sum(not item["visible"] or item["answer_status"] == AnswerStatus.HIDDEN_INACTIVE.value for item in fields),
+                "eligible_safe_fill_success_rate": round(100 * correctly_filled / fill_eligible, 1) if fill_eligible else None,
+            },
+            # Draft text remains in memory and is not persisted in the
+            # privacy-safe report. Provenance and approval state are retained.
+            "free_text_drafts": [
+                {key: value for key, value in draft.items() if key != "text"}
+                for draft in self.free_text_drafts
+            ],
         }

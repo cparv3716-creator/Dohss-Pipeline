@@ -14,12 +14,15 @@ from application_pipeline.private_db import (
     create_form_run,
     finish_form_run,
     get_application,
+    queue_user_action,
+    update_user_action_queue,
     update_browser_status,
 )
 
-from .inspector import merge_observed_fields, resolve_answers
+from .inspector import detect_page_blockers, merge_observed_fields, resolve_answers
 from .models import AnswerStatus, DryRunReport, ValidationIssue
 from application_pipeline.readiness import calculate_readiness
+from application_pipeline.free_text import ConservativeGroundedDraftProvider, prepare_free_text
 from .safety import ResumePolicy, SafeFillPolicy
 from .session import BrowserConfig, BrowserSession
 
@@ -50,6 +53,13 @@ class BrowserApplicationService:
         self.resume_policy = resume_policy or ResumePolicy()
         self.session_factory = session_factory
         self.adapter_factory = adapter_factory
+
+    @staticmethod
+    def _manual_handoff(session: Any, blockers: list[str]) -> bool:
+        try:
+            return bool(session.manual_user_handoff(blockers, lambda: detect_page_blockers(session.page)))
+        except TypeError:  # Compatibility for injected test/session implementations.
+            return bool(session.manual_user_handoff(blockers))
 
     def _load(self, application_id: int) -> tuple[dict[str, Any], dict[str, Any], str, Any]:
         application = get_application(self.private_db_path, application_id)
@@ -114,8 +124,16 @@ class BrowserApplicationService:
             with self.session_factory(self.browser_config, application_id) as session:
                 adapter.open_application(session, url)
                 inspection = adapter.inspect_form(session)
-                if inspection.blockers and session.manual_user_handoff(inspection.blockers):
-                    inspection = adapter.inspect_form(session)
+                if inspection.blockers:
+                    queue_user_action(self.private_db_path, application_id, inspection.blockers, "inspection challenge detected")
+                    if self.browser_config.manual_handoff and not self.browser_config.headless:
+                        update_user_action_queue(self.private_db_path, application_id, "IN_PROGRESS", "headed handoff started")
+                    if self._manual_handoff(session, inspection.blockers):
+                        inspection = adapter.inspect_form(session)
+                        if not inspection.blockers:
+                            update_user_action_queue(self.private_db_path, application_id, "COMPLETED", "challenge clearance verified")
+                    elif self.browser_config.manual_handoff and not self.browser_config.headless:
+                        update_user_action_queue(self.private_db_path, application_id, "TIMED_OUT", "challenge not verifiably cleared")
                 screenshots = [session.screenshot("inspection.png")]
                 html_path = session.html_snapshot("inspection.html")
                 status = "NEEDS_USER_ACTION" if inspection.blockers else "FORM_INSPECTED"
@@ -162,8 +180,15 @@ class BrowserApplicationService:
                     passes += 1
                     if inspection.blockers and not handoff_attempted:
                         handoff_attempted = True
-                        if session.manual_user_handoff(inspection.blockers):
+                        queue_user_action(self.private_db_path, application_id, inspection.blockers, "dry-run challenge detected")
+                        if self.browser_config.manual_handoff and not self.browser_config.headless:
+                            update_user_action_queue(self.private_db_path, application_id, "IN_PROGRESS", "headed handoff started")
+                        if self._manual_handoff(session, inspection.blockers):
                             inspection = adapter.inspect_form(session, passes)
+                            if not inspection.blockers:
+                                update_user_action_queue(self.private_db_path, application_id, "COMPLETED", "challenge clearance verified")
+                        elif self.browser_config.manual_handoff and not self.browser_config.headless:
+                            update_user_action_queue(self.private_db_path, application_id, "TIMED_OUT", "challenge not verifiably cleared")
                     blockers.extend(inspection.blockers)
                     all_fields, newly_seen = merge_observed_fields(observed, inspection.fields)
                     if passes > 1:
@@ -181,6 +206,25 @@ class BrowserApplicationService:
 
                 fields = list(observed.values())
                 blockers = list(dict.fromkeys(blockers))
+                drafts = []
+                verified_candidate = profile.verified_facts()
+                job_description = str(job.get("full_description") or job.get("description") or "")
+                draft_provider = ConservativeGroundedDraftProvider()
+                for field in fields:
+                    if not field.visible or field.canonical_question_type not in {
+                        "WHY_COMPANY", "WHY_ROLE", "PROJECT_EXAMPLE", "LEADERSHIP_EXAMPLE",
+                    }:
+                        continue
+                    draft = prepare_free_text(
+                        field.raw_question, field.canonical_question_type,
+                        verified_candidate, job_description, draft_provider,
+                    )
+                    drafts.append({
+                        "field_id": field.field_id, "question_type": field.canonical_question_type,
+                        "status": draft.status, "text": draft.text,
+                        "provenance": draft.provenance, "reason": draft.reason,
+                        "human_approval_required": draft.status == "PREPARED_REVIEW_REQUIRED",
+                    })
                 validation.extend(adapter.validate(session, fields))
                 resume_required = any(
                     item.visible and item.required and item.field_type == "file"
@@ -216,6 +260,7 @@ class BrowserApplicationService:
                     inspection_passes=passes,
                     conditional_fields_detected=conditional_fields,
                     readiness=readiness.to_dict(),
+                    free_text_drafts=drafts,
                 )
                 payload = self._write_report(session, report)
         except Exception as exc:

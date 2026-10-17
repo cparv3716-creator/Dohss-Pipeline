@@ -7,7 +7,9 @@ from application_pipeline.browser.models import AnswerStatus, ApplicationField, 
 from application_pipeline.browser.service import BrowserApplicationService
 from application_pipeline.browser.session import BrowserConfig
 from application_pipeline.cli import review_application
-from application_pipeline.private_db import get_application, get_form_runs, upsert_application
+from application_pipeline.private_db import (
+    get_application, get_form_runs, list_user_action_queue, upsert_application,
+)
 from candidate import AnswerBank, CandidateProfile
 from database import db
 from tests.helpers import answer, write_answers, write_profile
@@ -83,6 +85,11 @@ class HandoffSession(FakeSession):
     def manual_user_handoff(self, _reasons):
         type(self).handoff_calls += 1
         return True
+
+
+class TimeoutHandoffSession(FakeSession):
+    def manual_user_handoff(self, _reasons, *_args):
+        return False
 
 
 class HandoffAdapter(FakeAdapter):
@@ -188,6 +195,27 @@ class BrowserServiceTests(unittest.TestCase):
             self.assertEqual(HandoffAdapter.inspections, 2)
             self.assertEqual(report.authentication_blockers, [])
             self.assertEqual(report.final_status, "FORM_READY_FOR_REVIEW")
+            queue = list_user_action_queue(private_db, "ALL")
+            self.assertEqual(queue[0]["status"], "COMPLETED")
+
+    def test_manual_captcha_timeout_is_queued_without_submission(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            public_db, private_db, app = self._setup(root)
+            profile = CandidateProfile.load(write_profile(root / "profile.yaml"))
+            TimeoutHandoffSession.root = root
+            adapter = FakeAdapter()
+            adapter.blockers = ["CAPTCHA_REQUIRED"]
+            service = BrowserApplicationService(
+                str(public_db), str(private_db),
+                BrowserConfig(artifacts_root=str(root), headless=False, manual_handoff=True),
+                session_factory=TimeoutHandoffSession, adapter_factory=lambda *_args: adapter,
+            )
+            report = service.dry_run(app["id"], profile, AnswerBank.empty())
+            self.assertEqual(report.final_status, "NEEDS_USER_ACTION")
+            queue = list_user_action_queue(private_db, "ALL")
+            self.assertEqual(queue[0]["status"], "TIMED_OUT")
+            self.assertEqual(report.submission, "FINAL_SUBMIT_BLOCKED_BY_POLICY")
 
 
 if __name__ == "__main__":

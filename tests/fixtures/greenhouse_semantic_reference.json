@@ -1,0 +1,29 @@
+{
+  "description": "Sanitized, manually labelled composite of recurring controls from the five prior Greenhouse validation forms.",
+  "expected": [
+    {"label": "First Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Last Name", "field_type": "text", "required": true, "visible": true},
+    {"label": "Email", "field_type": "email", "required": true, "visible": true},
+    {"label": "Phone", "field_type": "phone", "required": false, "visible": true},
+    {"label": "Degree", "field_type": "select", "required": true, "visible": true},
+    {"label": "Graduation year", "field_type": "select", "required": true, "visible": true},
+    {"label": "Graduation month", "field_type": "select", "required": false, "visible": true},
+    {"label": "Country", "field_type": "select", "required": true, "visible": true},
+    {"label": "Location (City)", "field_type": "select", "required": true, "visible": true},
+    {"label": "School", "field_type": "select", "required": true, "visible": true},
+    {"label": "Discipline", "field_type": "select", "required": true, "visible": true},
+    {"label": "Start date month", "field_type": "select", "required": true, "visible": true},
+    {"label": "Start date year", "field_type": "number", "required": true, "visible": true},
+    {"label": "End date month", "field_type": "select", "required": true, "visible": true},
+    {"label": "End date year", "field_type": "number", "required": true, "visible": true},
+    {"label": "LinkedIn profile", "field_type": "text", "required": true, "visible": true},
+    {"label": "I acknowledge the applicant privacy notice", "field_type": "select", "required": true, "visible": true},
+    {"label": "Highest Level of Education Completed", "field_type": "select", "required": true, "visible": true},
+    {"label": "Will you now or in the future require visa sponsorship?", "field_type": "radio", "required": true, "visible": true},
+    {"label": "Work preferences", "field_type": "checkbox", "required": false, "visible": true},
+    {"label": "City", "field_type": "text", "required": false, "visible": true},
+    {"label": "City", "field_type": "text", "required": false, "visible": true},
+    {"label": "State", "field_type": "select", "required": true, "visible": false},
+    {"label": "Resume/CV", "field_type": "file", "required": true, "visible": true}
+  ]
+}

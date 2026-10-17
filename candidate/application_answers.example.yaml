@@ -16,6 +16,8 @@ answers:
   DEGREE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   UNIVERSITY: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   GRADUATION_YEAR: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  GRADUATION_MONTH: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
+  GRADUATION_DATE: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   CGPA: {value: null, verified: false, auto_answer_allowed: false, sensitivity: sensitive, source: "", confidence: 0}
   VERIFIED_SKILLS: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}
   NOTICE_PERIOD: {value: null, verified: false, auto_answer_allowed: false, sensitivity: private, source: "", confidence: 0}

@@ -5,7 +5,7 @@ from pathlib import Path
 from application_pipeline.browser.models import AnswerStatus, ApplicationField, ValidationIssue
 from application_pipeline.browser.safety import ResumePolicy
 from application_pipeline.candidate_audit import audit_candidate, format_candidate_audit
-from application_pipeline.free_text import prepare_free_text
+from application_pipeline.free_text import ConservativeGroundedDraftProvider, prepare_free_text
 from application_pipeline.readiness import calculate_readiness
 from candidate import AnswerBank, CandidateProfile
 from tests.helpers import answer, verified, write_answers, write_profile
@@ -63,6 +63,21 @@ class CandidateAuditAndReadinessTests(unittest.TestCase):
             type("BadProvider", (), {"generate": lambda self, **kwargs: ("Draft", ["invented.fact"])})(),
         )
         self.assertEqual(invalid.status, "NEEDS_REVIEW")
+
+    def test_conservative_free_text_uses_only_declared_provenance(self):
+        draft = prepare_free_text(
+            "Describe a relevant project", "PROJECT_EXAMPLE",
+            {"projects": [{"name": "Verified project", "result": "Verified result"}]},
+            "The role requires analysis.", ConservativeGroundedDraftProvider(),
+        )
+        self.assertEqual(draft.status, "PREPARED_REVIEW_REQUIRED")
+        self.assertEqual(draft.provenance, ["profile.projects"])
+        self.assertIn("Verified project", draft.text)
+        company = prepare_free_text(
+            "Why this company?", "WHY_COMPANY", {"projects": ["Verified project"]},
+            "Public job description", ConservativeGroundedDraftProvider(),
+        )
+        self.assertEqual(company.status, "NEEDS_REVIEW")
 
     def test_required_validation_error_prevents_ready(self):
         field = ApplicationField("email", "Email", "Email", "email", True, confidence=100, answer_status=AnswerStatus.FILLED.value)

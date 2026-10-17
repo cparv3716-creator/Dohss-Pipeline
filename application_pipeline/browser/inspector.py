@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from collections import OrderedDict
 from typing import Any, Iterable, Mapping, Optional
@@ -17,17 +18,24 @@ from .safety import SafeFillPolicy
 
 LIVE_EXTRACTION_SCRIPT = r"""
 els => els.filter(el => {
+  const kind = (el.type || '').toLowerCase();
+  const customSelect = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox';
+  return kind !== 'hidden' && (customSelect || !['submit','button','reset','image'].includes(kind));
+}).map((el, index) => {
   const style = getComputedStyle(el);
   const rect = el.getBoundingClientRect();
-  return !el.disabled && el.type !== 'hidden' && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-}).map((el, index) => {
+  const visible = !el.hidden && el.getAttribute('aria-hidden') !== 'true' && style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   const labels = el.labels ? Array.from(el.labels).map(x => x.innerText.trim()).filter(Boolean) : [];
+  const labelledBy = (el.getAttribute('aria-labelledby') || '').split(/\s+/).filter(Boolean)
+    .map(id => document.getElementById(id)?.innerText?.trim() || '').filter(Boolean);
   const fieldset = el.closest('fieldset');
   const legend = fieldset?.querySelector('legend')?.innerText?.trim() || '';
-  const nearby = el.closest('.field, .application-field, .form-group, [class*="field"]');
-  const nearbyText = nearby?.querySelector('label')?.innerText?.trim() || '';
+  const nearby = el.closest('[data-field-id], .field, .application-field, .form-group, .question, [class*="field"]');
+  const nearbyLabel = nearby?.querySelector(':scope > label, :scope > legend, label[for]') || null;
+  const nearbyText = nearbyLabel?.innerText?.trim() || '';
   const uploadLabel = el.type === 'file' ? el.closest('.file-upload')?.querySelector('.upload-label, .label')?.innerText?.trim() || '' : '';
-  const label = uploadLabel || labels[0] || el.getAttribute('aria-label') || nearbyText || legend || el.placeholder || el.name || el.id || `field_${index}`;
+  const labelSource = uploadLabel || labels[0] || labelledBy.join(' ') || el.getAttribute('aria-label') || legend || nearbyText || el.placeholder || el.name || el.id || '';
+  const label = labelSource || `field_${index}`;
   const ariaLabel = el.getAttribute('aria-label') || '';
   const selector = el.id ? `[id=${JSON.stringify(el.id)}]` : el.name ? `${el.tagName.toLowerCase()}[name=${JSON.stringify(el.name)}]` : ariaLabel ? `${el.tagName.toLowerCase()}[aria-label=${JSON.stringify(ariaLabel)}]` : `${el.tagName.toLowerCase()}:nth-of-type(${index + 1})`;
   const isCustomSelect = el.getAttribute('role') === 'combobox' || el.getAttribute('aria-haspopup') === 'listbox';
@@ -35,10 +43,17 @@ els => els.filter(el => {
   const optionRoot = controlled ? document.getElementById(controlled) : null;
   const customOptions = optionRoot ? Array.from(optionRoot.querySelectorAll('[role=option]')).map(o => ({value: o.getAttribute('data-value') || o.innerText.trim(), label: o.innerText.trim()})) : [];
   const options = el.tagName === 'SELECT' ? Array.from(el.options).map(o => ({value: o.value, label: o.text.trim()})) : customOptions;
+  const markerText = [labels[0] || '', labelledBy.join(' '), legend, nearbyText].join(' ');
+  const requiredSource = el.required ? 'native' : el.getAttribute('aria-required') === 'true' ? 'aria' : /(^|\s)\*(\s|$)/.test(markerText) ? 'label_marker' : '';
+  const groupRoot = fieldset || nearby || el.parentElement;
+  const groupIndex = groupRoot ? Array.from(document.querySelectorAll('fieldset, [data-field-id], .field, .application-field, .form-group, .question, [class*="field"]')).indexOf(groupRoot) : -1;
+  const groupKey = groupRoot?.getAttribute('data-field-id') || groupRoot?.id || (groupIndex >= 0 ? `container_${groupIndex}` : '') || el.name || el.id || '';
   return {
     id: el.id || el.name || `field_${index}`,
     name: el.name || '', tag: el.tagName.toLowerCase(), type: (el.type || '').toLowerCase(),
-    label, legend, selector, required: !!el.required || el.getAttribute('aria-required') === 'true' || /\*/.test(labels[0] || nearbyText),
+    label, legend, selector, required: !!requiredSource, required_source: requiredSource,
+    visible, enabled: !el.disabled && el.getAttribute('aria-disabled') !== 'true', group_key: groupKey,
+    meaningful_label: !!labelSource,
     custom_select: isCustomSelect,
     value: el.type === 'checkbox' || el.type === 'radio' ? !!el.checked : el.value,
     option_value: el.value || '', option_label: labels[0] || el.value || '', options
@@ -75,15 +90,20 @@ def _label_for(soup: BeautifulSoup, element: Tag) -> str:
 def _raw_fields_from_html(content: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(content or "", "html.parser")
     rows = []
-    for index, element in enumerate(soup.select("input, textarea, select")):
+    for index, element in enumerate(soup.select("input, textarea, select, [role=combobox], button[aria-haspopup=listbox]")):
         input_type = str(element.get("type") or "").lower()
-        if input_type in ("hidden", "submit", "button", "reset", "image") or element.has_attr("disabled"):
+        custom_select = str(element.get("role") or "").lower() == "combobox" or str(element.get("aria-haspopup") or "").lower() == "listbox"
+        if input_type == "hidden" or (input_type in ("submit", "button", "reset", "image") and not custom_select):
             continue
         label = _label_for(soup, element)
+        if not label:
+            continue
         fieldset = element.find_parent("fieldset")
         legend = normalize_question(fieldset.find("legend").get_text(" ", strip=True)) if fieldset and fieldset.find("legend") else ""
-        required_marker_container = element.find_parent(["label", "fieldset", "div"])
-        has_required_marker = bool(required_marker_container and "*" in required_marker_container.get_text(" ", strip=True))
+        own_label = element.find_parent("label")
+        marker_text = " ".join(part for part in (label, legend, own_label.get_text(" ", strip=True) if own_label else "") if part)
+        has_required_marker = bool(re.search(r"(^|\s)\*(\s|$)", marker_text))
+        required_source = "native" if element.has_attr("required") else "aria" if str(element.get("aria-required") or "").lower() == "true" else "label_marker" if has_required_marker else ""
         name = str(element.get("name") or "")
         element_id = str(element.get("id") or name or f"field_{index}")
         if element.get("id"):
@@ -98,16 +118,32 @@ def _raw_fields_from_html(content: str) -> list[dict[str, Any]]:
                 {"value": str(option.get("value") or option.get_text(" ", strip=True)), "label": normalize_question(option.get_text(" ", strip=True))}
                 for option in element.find_all("option")
             ]
+        elif custom_select and element.get("aria-controls"):
+            option_root = soup.find(id=str(element.get("aria-controls")))
+            if option_root:
+                options = [
+                    {"value": str(option.get("data-value") or option.get_text(" ", strip=True)), "label": normalize_question(option.get_text(" ", strip=True))}
+                    for option in option_root.select('[role="option"]')
+                ]
         rows.append(
             {
                 "id": element_id, "name": name, "tag": element.name,
                 "type": input_type, "label": label, "selector": selector,
                 "legend": legend,
-                "required": element.has_attr("required") or str(element.get("aria-required") or "").lower() == "true" or has_required_marker,
+                "required": bool(required_source), "required_source": required_source,
+                "visible": not any(
+                    node.has_attr("hidden")
+                    or str(node.get("aria-hidden") or "").lower() == "true"
+                    or re.search(r"display\s*:\s*none|visibility\s*:\s*hidden", str(node.get("style") or ""), re.I)
+                    for node in [element, *element.parents] if isinstance(node, Tag)
+                ),
+                "enabled": not element.has_attr("disabled"),
+                "group_key": str((fieldset or element.find_parent(["div", "li"]) or element).get("data-field-id") or (fieldset or element.find_parent(["div", "li"]) or element).get("id") or name or element_id),
                 "value": element.has_attr("checked") if input_type in ("radio", "checkbox") else str(element.get("value") or element.text or ""),
                 "option_value": str(element.get("value") or ""),
                 "option_label": label or str(element.get("value") or ""),
                 "options": options,
+                "custom_select": custom_select,
             }
         )
     return rows
@@ -149,32 +185,70 @@ def _sensitivity(question_type: str, question: str) -> str:
     return "private"
 
 
+def _semantic_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", normalize_question(value).lower()).strip()
+
+
+def _logical_id(frame_url: str, row: Mapping[str, Any], label: str, field_type: str, discriminator: str = "") -> str:
+    """Create an identity that survives React IDs while preserving distinct questions."""
+    group = _semantic_text(str(row.get("group_key") or row.get("name") or row.get("id") or discriminator))
+    semantic = "|".join((_semantic_text(frame_url), _semantic_text(label), field_type, group, discriminator))
+    return "field:" + hashlib.sha256(semantic.encode("utf-8")).hexdigest()[:20]
+
+
 def normalize_fields(rows: Iterable[Mapping[str, Any]], frame_url: str = "") -> list[ApplicationField]:
     raw = list(rows)
-    radio_groups: OrderedDict[str, list[Mapping[str, Any]]] = OrderedDict()
-    non_radios = []
+    groups: OrderedDict[tuple[str, str], list[Mapping[str, Any]]] = OrderedDict()
+    non_groups = []
     for row in raw:
-        if str(row.get("type") or "").lower() == "radio":
-            key = str(row.get("name") or row.get("id") or "radio")
-            radio_groups.setdefault(key, []).append(row)
+        if row.get("meaningful_label", True) is False:
+            continue
+        kind = str(row.get("type") or "").lower()
+        if kind in {"radio", "checkbox"} and row.get("name"):
+            key = str(row.get("group_key") or row.get("name") or row.get("id") or kind)
+            groups.setdefault((kind, key), []).append(row)
         else:
-            non_radios.append(row)
+            non_groups.append(row)
     fields: list[ApplicationField] = []
-    for row in non_radios:
+    candidates: list[ApplicationField] = []
+    for row in non_groups:
         label = normalize_question(str(row.get("label") or row.get("id") or ""))
         classified = classify_question(label)
-        fields.append(
+        field_type = _field_type(row)
+        candidates.append(
             ApplicationField(
                 field_id=str(row.get("id") or f"field_{len(fields)}"),
-                label=label, raw_question=label, field_type=_field_type(row),
+                label=label, raw_question=label, field_type=field_type,
                 required=bool(row.get("required")), options=list(row.get("options") or []),
                 current_value=row.get("value"), canonical_question_type=classified.question_type,
                 skill=classified.skill, sensitivity=_sensitivity(classified.question_type, label),
                 confidence=classified.confidence, selector=str(row.get("selector") or ""), frame_url=frame_url,
                 control_kind="combobox" if row.get("custom_select") else "native",
+                visible=bool(row.get("visible", True)), enabled=bool(row.get("enabled", True)),
+                required_source=str(row.get("required_source") or ""),
+                logical_id=_logical_id(frame_url, row, label, field_type),
+                semantic_key="|".join((_semantic_text(label), _semantic_text(str(row.get("group_key") or row.get("name") or "")))),
             )
         )
-    for name, group in radio_groups.items():
+    # React select widgets often expose both a combobox and a companion text
+    # input for one question. Prefer the semantic combobox without merging
+    # same-labelled controls from different containers.
+    by_semantic: OrderedDict[str, ApplicationField] = OrderedDict()
+    for item in candidates:
+        previous = by_semantic.get(item.semantic_key)
+        if previous is None:
+            by_semantic[item.semantic_key] = item
+        elif item.control_kind == "combobox" and previous.control_kind != "combobox":
+            by_semantic[item.semantic_key] = item
+        elif previous.control_kind == "combobox" and item.control_kind != "combobox":
+            continue
+        elif item.logical_id != previous.logical_id and item.selector != previous.selector:
+            # Same words can be two real questions. Their container/name is
+            # part of semantic_key, so reaching this branch means a genuine
+            # distinct control without a stable shared group.
+            by_semantic[f"{item.semantic_key}|{item.logical_id}"] = item
+    fields.extend(by_semantic.values())
+    for (kind, name), group in groups.items():
         first = group[0]
         label = normalize_question(str(first.get("legend") or first.get("label") or name))
         classified = classify_question(label)
@@ -183,16 +257,26 @@ def normalize_fields(rows: Iterable[Mapping[str, Any]], frame_url: str = "") -> 
             for row in group
         ]
         selected = next((row.get("option_value") for row in group if row.get("value") is True), "")
+        field_type = FieldType.RADIO.value if kind == "radio" else FieldType.CHECKBOX.value
         fields.append(
             ApplicationField(
-                field_id=name, label=label, raw_question=label, field_type=FieldType.RADIO.value,
+                field_id=name, label=label, raw_question=label, field_type=field_type,
                 required=any(bool(row.get("required")) for row in group), options=options,
                 current_value=selected, canonical_question_type=classified.question_type,
                 skill=classified.skill, sensitivity=_sensitivity(classified.question_type, label),
-                confidence=classified.confidence, selector=f'input{_css_attribute("name", name)}', frame_url=frame_url,
-                control_kind="radio_group",
+                confidence=classified.confidence, selector=f'input{_css_attribute("name", str(first.get("name") or name))}', frame_url=frame_url,
+                control_kind=f"{kind}_group",
+                visible=any(bool(row.get("visible", True)) for row in group),
+                enabled=any(bool(row.get("enabled", True)) for row in group),
+                required_source=next((str(row.get("required_source")) for row in group if row.get("required_source")), ""),
+                logical_id=_logical_id(frame_url, first, label, field_type),
+                semantic_key="|".join((_semantic_text(label), _semantic_text(name))),
             )
         )
+    for field in fields:
+        if not field.visible or not field.enabled:
+            field.answer_status = AnswerStatus.HIDDEN_INACTIVE.value
+            field.answer_reason = "HIDDEN_OR_INACTIVE_CONTROL"
     return fields
 
 
@@ -214,19 +298,19 @@ def inspect_page_fields(page: Any, pass_number: int = 1) -> list[ApplicationFiel
     seen = set()
     unique = []
     for item in fields:
-        key = (item.frame_url, item.field_id, item.field_type)
+        key = item.logical_id or (item.frame_url, item.field_id, item.field_type)
         if key not in seen:
             seen.add(key)
             unique.append(item)
     return unique
 
 
-def field_identity(item: ApplicationField) -> tuple[str, str, str, str]:
-    return (item.frame_url, item.field_id, item.raw_question, item.field_type)
+def field_identity(item: ApplicationField) -> str:
+    return item.logical_id or "|".join((item.frame_url, item.field_id, item.raw_question, item.field_type))
 
 
 def merge_observed_fields(
-    observed: dict[tuple[str, str, str, str], ApplicationField],
+    observed: dict[str, ApplicationField],
     current: list[ApplicationField],
 ) -> tuple[list[ApplicationField], int]:
     """Keep prior safe-fill results while adding newly revealed controls."""
@@ -248,6 +332,7 @@ def merge_observed_fields(
         item.answer_reason = previous.answer_reason
         item.proposed_value = previous.proposed_value
         item.confidence = previous.confidence
+        item.logical_id = previous.logical_id or item.logical_id
         if previous.answer_status in (AnswerStatus.FILLED.value, AnswerStatus.UPLOADED.value):
             item.current_value = previous.current_value
         observed[key] = item
@@ -305,6 +390,15 @@ def detect_authentication_blockers(content: str) -> list[str]:
 
 def detect_page_blockers(page: Any) -> list[str]:
     try:
-        return detect_authentication_blockers(page.content())
+        blockers = detect_authentication_blockers(page.content())
+        if AuthenticationBlocker.CAPTCHA_REQUIRED.value in blockers:
+            solved = page.locator(
+                'textarea[name="g-recaptcha-response"], input[name="g-recaptcha-response"], '
+                'textarea[name="h-captcha-response"], input[name="h-captcha-response"], '
+                'textarea[name="cf-turnstile-response"], input[name="cf-turnstile-response"]'
+            ).evaluate_all("els => els.some(e => String(e.value || '').trim().length > 20)")
+            if solved:
+                blockers.remove(AuthenticationBlocker.CAPTCHA_REQUIRED.value)
+        return blockers
     except Exception:
         return []

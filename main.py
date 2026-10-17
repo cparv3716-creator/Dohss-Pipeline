@@ -1201,6 +1201,21 @@ def cmd_review_application(config):
     print(review_application(config, application_id))
 
 
+def cmd_application_review_queue(config):
+    from application_pipeline.cli import json_list, review_queue
+    rows = review_queue(config, sys.argv[2:])
+    if not rows:
+        print("No pending application challenges.")
+        return
+    for row in rows:
+        blockers = json_list(row.get("blocker_types"))
+        print(
+            f"Application {row['application_id']} | {row['status']} | "
+            f"{', '.join(blockers) if blockers else 'USER_ACTION'} | attempts {row['attempts']}"
+        )
+    print("Use dry-run-application <id> --headed --manual-handoff to process one item safely.")
+
+
 COMMANDS = {
     "run": cmd_run, "fetch-now": cmd_fetch_now, "dashboard": cmd_dashboard,
     "add-hr": cmd_add_hr, "enrich-contacts": cmd_enrich_contacts,
@@ -1232,6 +1247,7 @@ COMMANDS = {
     "dry-run-application": cmd_dry_run_application,
     "candidate-audit": cmd_candidate_audit,
     "review-application": cmd_review_application,
+    "application-review-queue": cmd_application_review_queue,
     # DoHSS target company + HR commands
     "discover-target-companies": cmd_discover_target_companies,
     "target-company-status": cmd_target_company_status,
@@ -1302,6 +1318,8 @@ DoHSS Placement Intelligence Pipeline
                               Show profile completeness without printing private values
   python main.py review-application <application_id>
                               Show a privacy-safe field-level readiness review
+  python main.py application-review-queue [--all]
+                              List private CAPTCHA/authentication handoff items
 
 --- Companies ---
   python main.py import-company-seeds companies.csv

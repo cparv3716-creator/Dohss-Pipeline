@@ -84,6 +84,7 @@ class AtsEnrichmentQuestionTests(unittest.TestCase):
         self.assertEqual(classify_question("Have you worked here in the past 10 years?").question_type, "OTHER")
         self.assertEqual(classify_question("School").question_type, "UNIVERSITY")
         self.assertEqual(classify_question("End date year").question_type, "GRADUATION_YEAR")
+        self.assertEqual(classify_question("When is your graduation date?").question_type, "GRADUATION_DATE")
         self.assertEqual(classify_question("Start date year").question_type, "OTHER")
 
 

@@ -109,6 +109,15 @@ def init_private_db(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_application_form_runs_application
                 ON application_form_runs(application_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS application_review_queue (
+                application_id INTEGER PRIMARY KEY REFERENCES applications(id),
+                blocker_types TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_reason TEXT,
+                queued_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TRIGGER IF NOT EXISTS prohibit_submission_insert
             BEFORE INSERT ON applications WHEN NEW.status = 'SUBMITTED'
             BEGIN SELECT RAISE(ABORT, 'SUBMITTED is disabled in the preparation milestone'); END;
@@ -357,6 +366,64 @@ def get_form_runs(path: str | Path, application_id: int) -> list[dict[str, Any]]
             "SELECT * FROM application_form_runs WHERE application_id=? ORDER BY created_at DESC",
             (int(application_id),),
         ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def queue_user_action(path: str | Path, application_id: int, blockers: list[str], reason: str = "") -> None:
+    """Queue a challenge without storing credentials, tokens, or solutions."""
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        now = _now()
+        conn.execute(
+            """
+            INSERT INTO application_review_queue
+              (application_id,blocker_types,status,attempts,last_reason,queued_at,updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(application_id) DO UPDATE SET
+              blocker_types=excluded.blocker_types,status='PENDING',
+              last_reason=excluded.last_reason,updated_at=excluded.updated_at
+            """,
+            (int(application_id), _json(list(dict.fromkeys(blockers))), "PENDING", 0, reason, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_user_action_queue(path: str | Path, application_id: int, status: str, reason: str = "") -> None:
+    if status not in {"IN_PROGRESS", "COMPLETED", "TIMED_OUT", "FAILED", "PENDING"}:
+        raise ValueError(f"invalid review queue status: {status}")
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        now = _now()
+        conn.execute(
+            """UPDATE application_review_queue SET status=?,
+               attempts=attempts + CASE WHEN ?='IN_PROGRESS' THEN 1 ELSE 0 END,
+               last_reason=?,updated_at=? WHERE application_id=?""",
+            (status, status, reason, now, int(application_id)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_user_action_queue(path: str | Path, status: str = "PENDING", limit: int = 100) -> list[dict[str, Any]]:
+    init_private_db(path)
+    conn = _connect(path)
+    try:
+        if status == "ALL":
+            rows = conn.execute(
+                "SELECT * FROM application_review_queue ORDER BY updated_at DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM application_review_queue WHERE status=? ORDER BY queued_at LIMIT ?",
+                (status, int(limit)),
+            ).fetchall()
         return [dict(row) for row in rows]
     finally:
         conn.close()

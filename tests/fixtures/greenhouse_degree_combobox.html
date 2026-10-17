@@ -1,0 +1,24 @@
+<!doctype html>
+<html><body><form>
+  <div class="field" data-field-id="degree">
+    <label id="degree-label" for="degree-input">Degree *</label>
+    <input id="degree-input" role="combobox" aria-labelledby="degree-label" aria-haspopup="listbox" aria-controls="degree-options" aria-required="true">
+    <input aria-hidden="true" tabindex="-1" required>
+  </div>
+  <div id="degree-options" role="listbox"></div>
+  <button type="submit">Submit Application</button>
+</form>
+<script>
+const input = document.getElementById('degree-input');
+const options = document.getElementById('degree-options');
+function render() {
+  setTimeout(() => {
+    options.innerHTML = '<div role="option" data-value="masters">Master\'s degree</div><div role="option" data-value="bachelors">Bachelor\'s degree</div>';
+    options.querySelectorAll('[role=option]').forEach(option => option.addEventListener('click', () => {
+      input.value = option.innerText;
+      options.innerHTML = '';
+    }));
+  }, 400);
+}
+input.addEventListener('click', render);
+</script></body></html>
